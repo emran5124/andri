@@ -20,6 +20,12 @@ jobs:
     - name: Re-generate pristine Gradle Wrapper
       run: gradle wrapper
 
+    - name: Decrypt Keystore
+      run: |
+        if [ -f debug.keystore.base64 ]; then
+          base64 -d debug.keystore.base64 > debug.keystore
+        fi
+
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
