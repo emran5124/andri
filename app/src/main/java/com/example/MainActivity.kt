@@ -1002,6 +1002,7 @@ fun ProcessingTab(viewModel: MainViewModel) {
 // ================= API KEYS TAB =================
 @Composable
 fun ApiKeysTab(viewModel: MainViewModel) {
+    val context = LocalContext.current
     val apiKeys by viewModel.apiKeysFlow.collectAsState()
 
     var showAddDialog by remember { mutableStateOf(false) }
@@ -1011,7 +1012,7 @@ fun ApiKeysTab(viewModel: MainViewModel) {
     // Models tracking
     val selectedModelsList = remember { mutableStateListOf<ModelConfig>() }
 
-    val defaultModelOptions = viewModel.getGlobalModels()
+    val defaultModelOptions by viewModel.globalModelsFlow.collectAsState()
 
     if (showAddDialog) {
         AlertDialog(
@@ -1160,80 +1161,214 @@ fun ApiKeysTab(viewModel: MainViewModel) {
             }
         }
     ) { p ->
-        Column(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(p)
-                .padding(16.dp)
+                .padding(horizontal = 16.dp),
+            contentPadding = PaddingValues(top = 16.dp, bottom = 80.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Default.Lock, contentDescription = "Keys info", tint = MaterialTheme.colorScheme.primary)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("مدیریت و اولویت کلیدهای API", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Lock, contentDescription = "Keys info", tint = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("مدیریت و اولویت کلیدهای API", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                }
             }
-            Text(
-                text = "ترتیب قرارگیری کلیدها تعیین‌کننده اولویت استفاده پیش فرض است. با فلش‌ها می‌توانید اولویت را جابجا کنید.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 6.dp),
-                textAlign = TextAlign.Right
-            )
 
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            item {
+                Text(
+                    text = "ترتیب قرارگیری کلیدها تعیین‌کننده اولویت استفاده پیش فرض است. با فلش‌ها می‌توانید اولویت را جابجا کنید.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 4.dp),
+                    textAlign = TextAlign.Right
+                )
+            }
 
+            item {
+                HorizontalDivider()
+            }
+
+            // API Keys List Section
             if (apiKeys.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("هیچ کلیدی افزوده نشده است. روی دکمه + کلیک کنید.", style = MaterialTheme.typography.bodyMedium)
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f))
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("هیچ کلیدی افزوده نشده است. روی دکمه + کلیک کنید.", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
                 }
             } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    itemsIndexed(apiKeys) { idx, config ->
-                        val models = JsonSerializer.deserializeModels(config.modelsJson)
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            border = borderStroke(alpha = 0.15f)
+                itemsIndexed(apiKeys) { idx, config ->
+                    val models = JsonSerializer.deserializeModels(config.modelsJson)
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        border = borderStroke(alpha = 0.15f)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = "${idx + 1}. ${config.title}",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    // Blur key representation
-                                    Text(
-                                        text = "کلید: " + config.apiKey.take(4) + "..." + config.apiKey.takeLast(4),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = "مدل‌های تخصیصی: " + models.map { it.title }.joinToString("، "),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "${idx + 1}. ${config.title}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                // Blur key representation
+                                Text(
+                                    text = "کلید: " + config.apiKey.take(4) + "..." + config.apiKey.takeLast(4),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "مدل‌های تخصیصی: " + models.map { it.title }.joinToString("، "),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
 
-                                Row {
-                                    IconButton(onClick = { viewModel.moveApiKeyUp(config) }) {
-                                        Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move Up")
+                            Row {
+                                IconButton(onClick = { viewModel.moveApiKeyUp(config) }) {
+                                    Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move Up")
+                                }
+                                IconButton(onClick = { viewModel.moveApiKeyDown(config) }) {
+                                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move Down")
+                                }
+                                IconButton(onClick = { viewModel.deleteApiKey(config.id) }) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            // Global Model Management inside ApiKeysTab
+            item {
+                var newModelCode by remember { mutableStateOf("") }
+                var newModelTitle by remember { mutableStateOf("") }
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.08f)),
+                    border = borderStroke(alpha = 0.15f)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.List, contentDescription = "Model configuration", tint = MaterialTheme.colorScheme.primary)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("مدیریت سراسری گزینه‌های مدل‌های هوش مصنوعی (موجود در برنامه):", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                        Text("مدل‌های وارد شده در این لیست در زمان افزودن کلیدهای API برای انتخاب مجاز بودن و در صفحه اصلی برای فرآيند خلاصه‌سازی در دسترس خواهند بود.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                        // Form to add a new model option
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = newModelCode,
+                                onValueChange = { newModelCode = it },
+                                label = { Text("کد شناسه مدل", fontSize = 11.sp) },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                                placeholder = { Text("gemini-1.5-pro", fontSize = 11.sp) }
+                            )
+                            OutlinedTextField(
+                                value = newModelTitle,
+                                onValueChange = { newModelTitle = it },
+                                label = { Text("عنوان نمایشی مدل", fontSize = 11.sp) },
+                                modifier = Modifier.weight(1.2f),
+                                singleLine = true,
+                                placeholder = { Text("Gemini 1.5 Pro", fontSize = 11.sp) }
+                            )
+                            Button(
+                                onClick = {
+                                    if (newModelCode.isNotBlank() && newModelTitle.isNotBlank()) {
+                                        viewModel.addGlobalModel(newModelCode.trim(), newModelTitle.trim())
+                                        newModelCode = ""
+                                        newModelTitle = ""
+                                        Toast.makeText(context, "مدل جدید با موفقیت به گزینه‌های سراسری برنامه اضافه گشت.", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(context, "کد شناسه و عنوان نمایشی نباید خالی باشد.", Toast.LENGTH_SHORT).show()
                                     }
-                                    IconButton(onClick = { viewModel.moveApiKeyDown(config) }) {
-                                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move Down")
-                                    }
-                                    IconButton(onClick = { viewModel.deleteApiKey(config.id) }) {
-                                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)
+                                },
+                                modifier = Modifier.height(52.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp)
+                            ) {
+                                Text("افزودن", fontSize = 12.sp)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("لیست مدل‌های موجود و ترتیب نمایش آن:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
+                                .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+                                .padding(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            if (defaultModelOptions.isEmpty()) {
+                                Text("هیچ مدلی ثبت نشده است.", fontSize = 11.sp, modifier = Modifier.padding(8.dp))
+                            } else {
+                                defaultModelOptions.forEach { model ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
+                                            .padding(start = 12.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(model.title, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                            Text("شناسه مدل: ${model.code}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+                                        }
+                                        IconButton(
+                                            onClick = { viewModel.moveGlobalModelUp(model) },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move Up", modifier = Modifier.size(18.dp))
+                                        }
+                                        IconButton(
+                                            onClick = { viewModel.moveGlobalModelDown(model) },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move Down", modifier = Modifier.size(18.dp))
+                                        }
+                                        IconButton(
+                                            onClick = { viewModel.deleteGlobalModel(model.code) },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                                        }
                                     }
                                 }
                             }
@@ -1866,112 +2001,6 @@ fun SettingsTab(viewModel: MainViewModel) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("پرش خودکار روی مدل/کلید بعدی بر اثر شکست", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                             Text("در صورت خاموش بودن، برای هر مدل سیستم توقف کرده و از شما سوال می‌کند.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
-            var newModelCode by remember { mutableStateOf("") }
-            var newModelTitle by remember { mutableStateOf("") }
-            val globalModels = viewModel.getGlobalModels()
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f))
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("مدیریت سراسری گزینه‌های مدل‌های هوش مصنوعی (موجود در برنامه):", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Text("مدل‌های وارد شده در این لیست در زمان افزودن کلیدهای API برای انتخاب مجاز بودن و در صفحه اصلی برای فرآيند خلاصه‌سازی در دسترس خواهند بود.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-
-                    // Form to add a new model option
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        OutlinedTextField(
-                            value = newModelCode,
-                            onValueChange = { newModelCode = it },
-                            label = { Text("کد شناسه مدل", fontSize = 11.sp) },
-                            modifier = Modifier.weight(1f),
-                            singleLine = true,
-                            placeholder = { Text("gemini-1.5-pro", fontSize = 11.sp) }
-                        )
-                        OutlinedTextField(
-                            value = newModelTitle,
-                            onValueChange = { newModelTitle = it },
-                            label = { Text("عنوان نمایشی مدل", fontSize = 11.sp) },
-                            modifier = Modifier.weight(1.2f),
-                            singleLine = true,
-                            placeholder = { Text("Gemini 1.5 Pro", fontSize = 11.sp) }
-                        )
-                        Button(
-                            onClick = {
-                                if (newModelCode.isNotBlank() && newModelTitle.isNotBlank()) {
-                                    viewModel.addGlobalModel(newModelCode.trim(), newModelTitle.trim())
-                                    newModelCode = ""
-                                    newModelTitle = ""
-                                    Toast.makeText(context, "مدل جدید با موفقیت به گزینه‌های سراسری برنامه اضافه گشت.", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    Toast.makeText(context, "کد شناسه و عنوان نمایشی نباید خالی باشد.", Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            modifier = Modifier.height(52.dp),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp)
-                        ) {
-                            Text("افزودن", fontSize = 12.sp)
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text("لیست مدل‌های موجود و ترتیب نمایش آن:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
-                            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
-                            .padding(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        if (globalModels.isEmpty()) {
-                            Text("هیچ مدلی ثبت نشده است.", fontSize = 11.sp, modifier = Modifier.padding(8.dp))
-                        } else {
-                            globalModels.forEach { model ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
-                                        .padding(start = 12.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(model.title, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
-                                        Text("شناسه مدل: ${model.code}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
-                                    }
-                                    IconButton(
-                                        onClick = { viewModel.moveGlobalModelUp(model) },
-                                        modifier = Modifier.size(28.dp)
-                                    ) {
-                                        Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move Up", modifier = Modifier.size(18.dp))
-                                    }
-                                    IconButton(
-                                        onClick = { viewModel.moveGlobalModelDown(model) },
-                                        modifier = Modifier.size(28.dp)
-                                    ) {
-                                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move Down", modifier = Modifier.size(18.dp))
-                                    }
-                                    IconButton(
-                                        onClick = { viewModel.deleteGlobalModel(model.code) },
-                                        modifier = Modifier.size(28.dp)
-                                    ) {
-                                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
-                                    }
-                                }
-                            }
                         }
                     }
                 }

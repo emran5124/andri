@@ -33,6 +33,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -104,6 +105,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val errorLogsFlow: StateFlow<List<ErrorLog>> = errorLogDao.getAllErrorLogsFlow()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val globalModelsFlow: StateFlow<List<ModelConfig>> = appSettingsFlow
+        .map { settings ->
+            val json = settings?.globalModelsJson ?: ""
+            if (json.isBlank()) {
+                listOf(
+                    ModelConfig("gemini-3.5-flash", "Gemini 3.5 Flash"),
+                    ModelConfig("gemini-3-flash-preview", "Gemini 3-Flash Preview"),
+                    ModelConfig("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite")
+                )
+            } else {
+                JsonSerializer.deserializeModels(json)
+            }
+        }
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            listOf(
+                ModelConfig("gemini-3.5-flash", "Gemini 3.5 Flash"),
+                ModelConfig("gemini-3-flash-preview", "Gemini 3-Flash Preview"),
+                ModelConfig("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite")
+            )
+        )
 
     // Selection States
     private val _selectedFileUri = MutableStateFlow<Uri?>(null)
@@ -267,10 +291,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val json = appSettingsFlow.value?.globalModelsJson ?: ""
         if (json.isBlank()) {
             return listOf(
-                ModelConfig("gemini-2.5-flash", "Gemini 2.5 Flash"),
-                ModelConfig("gemini-2.5-pro", "Gemini 2.5 Pro"),
-                ModelConfig("gemini-1.5-flash", "Gemini 1.5 Flash"),
-                ModelConfig("gemini-1.5-pro", "Gemini 1.5 Pro")
+                ModelConfig("gemini-3.5-flash", "Gemini 3.5 Flash"),
+                ModelConfig("gemini-3-flash-preview", "Gemini 3-Flash Preview"),
+                ModelConfig("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite")
             )
         }
         return JsonSerializer.deserializeModels(json)
