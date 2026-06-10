@@ -53,6 +53,8 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import java.text.SimpleDateFormat
@@ -123,7 +125,7 @@ fun MainScreen(
                 Button(
                     onClick = {
                         showResumeDialog = false
-                        viewModel.resumeSession(context, "در حال بازیابی...")
+                        viewModel.resumeSession(context)
                     }
                 ) {
                     Text("ادامه پردازش قبلی")
@@ -426,6 +428,7 @@ fun ProcessingTab(viewModel: MainViewModel) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
                                     .padding(vertical = 4.dp),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
@@ -616,7 +619,7 @@ fun ProcessingTab(viewModel: MainViewModel) {
                                 )
                                 Spacer(modifier = Modifier.height(16.dp))
                                 Button(
-                                    onClick = { viewModel.manualRetry(context, customPromptOverride) },
+                                    onClick = { viewModel.manualRetry(context) },
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Text("فیلترشکن را تغییر دادم، ادامه بده")
@@ -657,7 +660,7 @@ fun ProcessingTab(viewModel: MainViewModel) {
                                 Spacer(modifier = Modifier.height(12.dp))
 
                                 Button(
-                                    onClick = { viewModel.manualRetry(context, customPromptOverride) },
+                                    onClick = { viewModel.manualRetry(context) },
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Text("تلاش مجدد برای همین مدل")
@@ -666,7 +669,7 @@ fun ProcessingTab(viewModel: MainViewModel) {
                                 Spacer(modifier = Modifier.height(6.dp))
 
                                 Button(
-                                    onClick = { viewModel.proceedToNextFallback(context, customPromptOverride) },
+                                    onClick = { viewModel.proceedToNextFallback(context) },
                                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
@@ -1008,11 +1011,7 @@ fun ApiKeysTab(viewModel: MainViewModel) {
     // Models tracking
     val selectedModelsList = remember { mutableStateListOf<ModelConfig>() }
 
-    val defaultModelOptions = listOf(
-        ModelConfig("gemini-3.5-flash", "Gemini 3.5 Flash (سرعت بالا)"),
-        ModelConfig("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview (دقت عالی)"),
-        ModelConfig("gemini-3.1-flash-lite-preview", "Gemini 3.1 Flash Lite (اقتصادی)")
-    )
+    val defaultModelOptions = viewModel.getGlobalModels()
 
     if (showAddDialog) {
         AlertDialog(
@@ -1252,8 +1251,13 @@ fun PromptTemplatesTab(viewModel: MainViewModel) {
     val templates by viewModel.promptTemplatesFlow.collectAsState()
 
     var showAddDialog by remember { mutableStateOf(false) }
+    var showEditDialog by remember { mutableStateOf(false) }
+    var editingTemplate by remember { mutableStateOf<PromptTemplate?>(null) }
+
     var promptTitle by remember { mutableStateOf("") }
     var promptContent by remember { mutableStateOf("") }
+
+    var expandedId by remember { mutableStateOf<Int?>(null) }
 
     if (showAddDialog) {
         AlertDialog(
@@ -1279,7 +1283,7 @@ fun PromptTemplatesTab(viewModel: MainViewModel) {
                         onValueChange = { promptContent = it },
                         label = { Text("متن پرامپت و قوانین خلاصه‌سازی") },
                         modifier = Modifier.fillMaxWidth(),
-                        maxLines = 6
+                        maxLines = 10
                     )
                 }
             },
@@ -1294,11 +1298,73 @@ fun PromptTemplatesTab(viewModel: MainViewModel) {
                         }
                     }
                 ) {
-                    Text("دخیره الگو")
+                    Text("ذخیره الگو")
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showAddDialog = false }) {
+                    Text("لغو")
+                }
+            }
+        )
+    }
+
+    if (showEditDialog && editingTemplate != null) {
+        var editTitle by remember { mutableStateOf(editingTemplate!!.title) }
+        var editContent by remember { mutableStateOf(editingTemplate!!.promptContent) }
+
+        AlertDialog(
+            onDismissRequest = { showEditDialog = false },
+            title = {
+                Text(
+                    text = "ویرایش پرامپت الگو",
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Right
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = editTitle,
+                        onValueChange = { editTitle = it },
+                        label = { Text("عنوان پرامپت") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = editContent,
+                        onValueChange = { editContent = it },
+                        label = { Text("متن پرامپت و قوانین خلاصه‌سازی") },
+                        modifier = Modifier.fillMaxWidth(),
+                        maxLines = 12
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (editTitle.isNotBlank() && editContent.isNotBlank()) {
+                            viewModel.updatePromptTemplate(
+                                id = editingTemplate!!.id,
+                                title = editTitle,
+                                prompt = editContent,
+                                priorityOrder = editingTemplate!!.priorityOrder
+                            )
+                            showEditDialog = false
+                            editingTemplate = null
+                        }
+                    }
+                ) {
+                    Text("ذخیره تغییرات")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showEditDialog = false
+                        editingTemplate = null
+                    }
+                ) {
                     Text("لغو")
                 }
             }
@@ -1327,7 +1393,7 @@ fun PromptTemplatesTab(viewModel: MainViewModel) {
                 Text("مدیریت قالب‌های پرامپت فرآیند خلاصه‌سازی", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             }
             Text(
-                text = "می‌توانید پرامپت‌های دلخواه خود را اضافه کنید تا در زمان تفکیک بخش‌ها برای خلاصه‌سازی به مدل‌ها ارسال شوند.",
+                text = "می‌توانید پرامپت‌های دلخواه خود را اضافه یا ویرایش کنید. برای دیدن متن کامل هر قالب روی کادر مربوطه کلیک کنید.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 6.dp),
@@ -1346,18 +1412,36 @@ fun PromptTemplatesTab(viewModel: MainViewModel) {
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     itemsIndexed(templates) { _, template ->
+                        val isExpanded = expandedId == template.id
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             border = borderStroke(alpha = 0.15f)
                         ) {
                             Column(modifier = Modifier.padding(12.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
                                     Text(
                                         text = template.title,
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.Bold,
                                         modifier = Modifier.weight(1f)
                                     )
+                                    IconButton(onClick = { viewModel.movePromptTemplateUp(template) }) {
+                                        Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move Up")
+                                    }
+                                    IconButton(onClick = { viewModel.movePromptTemplateDown(template) }) {
+                                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move Down")
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            editingTemplate = template
+                                            showEditDialog = true
+                                        }
+                                    ) {
+                                        Icon(Icons.Default.Edit, contentDescription = "Edit Template", tint = MaterialTheme.colorScheme.primary)
+                                    }
                                     IconButton(onClick = { viewModel.deletePromptTemplate(template.id) }) {
                                         Icon(Icons.Default.Delete, contentDescription = "Delete Template", tint = MaterialTheme.colorScheme.error)
                                     }
@@ -1367,15 +1451,26 @@ fun PromptTemplatesTab(viewModel: MainViewModel) {
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(6.dp))
-                                        .padding(8.dp)
+                                        .clickable {
+                                            expandedId = if (isExpanded) null else template.id
+                                        }
+                                        .padding(12.dp)
                                 ) {
                                     Text(
                                         text = template.promptContent,
                                         style = MaterialTheme.typography.bodySmall,
-                                        maxLines = 3,
-                                        overflow = TextOverflow.Ellipsis,
+                                        maxLines = if (isExpanded) Int.MAX_VALUE else 3,
+                                        overflow = if (isExpanded) TextOverflow.Clip else TextOverflow.Ellipsis,
                                         textAlign = TextAlign.Right,
                                         modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                                if (isExpanded) {
+                                    Text(
+                                        text = "👆 برای بستن مجدد کلیک کنید.",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(top = 4.dp).align(Alignment.End)
                                     )
                                 }
                             }
@@ -1394,6 +1489,117 @@ fun HistoryTab(viewModel: MainViewModel) {
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
 
+    var viewingLog by remember { mutableStateOf<HistoryLog?>(null) }
+
+    if (viewingLog != null) {
+        val currentLog = viewingLog!!
+        AlertDialog(
+            onDismissRequest = { viewingLog = null },
+            title = {
+                Text(
+                    text = currentLog.fileName,
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Right
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(380.dp)
+                ) {
+                    Text(
+                        text = "متن کامل خلاصه تولید شده:",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                            .padding(8.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            Text(
+                                text = currentLog.summaryContent,
+                                style = MaterialTheme.typography.bodySmall,
+                                textAlign = TextAlign.Right,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "گزینه‌های اشتراک‌گذاری:",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                if (currentLog.savedTextUri.isNotEmpty()) {
+                                    shareFile(context, currentLog.savedTextUri, "text/plain")
+                                } else {
+                                    Toast.makeText(context, "فایل متنی در این مسیر موجود نیست.", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = "Share TXT", modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(2.dp))
+                            Text("فایل TXT", style = MaterialTheme.typography.labelSmall)
+                        }
+                        Button(
+                            onClick = {
+                                if (currentLog.savedHtmlUri.isNotEmpty()) {
+                                    shareFile(context, currentLog.savedHtmlUri, "text/html")
+                                } else {
+                                    Toast.makeText(context, "فایل وب در این مسیر موجود نیست.", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = "Share HTML", modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(2.dp))
+                            Text("فایل HTML", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        clipboardManager.setText(AnnotatedString(currentLog.summaryContent))
+                        Toast.makeText(context, "کل متن در کلیپ‌بورد کپی شد.", Toast.LENGTH_SHORT).show()
+                    }
+                ) {
+                    Text("کپی متن")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewingLog = null }) {
+                    Text("بستن")
+                }
+            }
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1405,7 +1611,7 @@ fun HistoryTab(viewModel: MainViewModel) {
         ) {
             Icon(Icons.Default.List, contentDescription = "History", tint = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.width(8.dp))
-            Text("تاریخچه فعالیت‌های اخیر", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("تاریخچه فعالیت‌های اخیر خلاصه‌سازی", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.weight(1f))
             if (history.isNotEmpty()) {
                 TextButton(onClick = { viewModel.clearHistory() }) {
@@ -1428,7 +1634,11 @@ fun HistoryTab(viewModel: MainViewModel) {
                 itemsIndexed(history) { _, log ->
                     val dateFormatted = SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.getDefault()).format(Date(log.timestamp))
                     Card(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                viewingLog = log
+                            },
                         border = borderStroke(alpha = 0.12f)
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
@@ -1462,7 +1672,7 @@ fun HistoryTab(viewModel: MainViewModel) {
                             ) {
                                 Text(
                                     text = log.summaryContent,
-                                    maxLines = 2,
+                                    maxLines = 3,
                                     overflow = TextOverflow.Ellipsis,
                                     style = MaterialTheme.typography.bodySmall,
                                     textAlign = TextAlign.Right,
@@ -1471,15 +1681,27 @@ fun HistoryTab(viewModel: MainViewModel) {
                             }
 
                             Spacer(modifier = Modifier.height(8.dp))
-                            Button(
-                                onClick = {
-                                    clipboardManager.setText(AnnotatedString(log.summaryContent))
-                                    Toast.makeText(context, "کپی در حافظه کلیپ‌بورد انجام شد.", Toast.LENGTH_SHORT).show()
-                                },
-                                modifier = Modifier.align(Alignment.End),
-                                shape = RoundedCornerShape(8.dp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("کپی متن کامل خلاصه")
+                                Text(
+                                    text = "👆 برای دیدن کل متن و اشتراک‌گذاری ضربه بزنید.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Button(
+                                    onClick = {
+                                        clipboardManager.setText(AnnotatedString(log.summaryContent))
+                                        Toast.makeText(context, "کپی در حافظه کلیپ‌بورد انجام شد.", Toast.LENGTH_SHORT).show()
+                                    },
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(32.dp)
+                                ) {
+                                    Text("کپی خلاصه", style = MaterialTheme.typography.labelSmall)
+                                }
                             }
                         }
                     }
@@ -1644,6 +1866,112 @@ fun SettingsTab(viewModel: MainViewModel) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("پرش خودکار روی مدل/کلید بعدی بر اثر شکست", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                             Text("در صورت خاموش بودن، برای هر مدل سیستم توقف کرده و از شما سوال می‌کند.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            var newModelCode by remember { mutableStateOf("") }
+            var newModelTitle by remember { mutableStateOf("") }
+            val globalModels = viewModel.getGlobalModels()
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f))
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("مدیریت سراسری گزینه‌های مدل‌های هوش مصنوعی (موجود در برنامه):", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text("مدل‌های وارد شده در این لیست در زمان افزودن کلیدهای API برای انتخاب مجاز بودن و در صفحه اصلی برای فرآيند خلاصه‌سازی در دسترس خواهند بود.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                    // Form to add a new model option
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = newModelCode,
+                            onValueChange = { newModelCode = it },
+                            label = { Text("کد شناسه مدل", fontSize = 11.sp) },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            placeholder = { Text("gemini-1.5-pro", fontSize = 11.sp) }
+                        )
+                        OutlinedTextField(
+                            value = newModelTitle,
+                            onValueChange = { newModelTitle = it },
+                            label = { Text("عنوان نمایشی مدل", fontSize = 11.sp) },
+                            modifier = Modifier.weight(1.2f),
+                            singleLine = true,
+                            placeholder = { Text("Gemini 1.5 Pro", fontSize = 11.sp) }
+                        )
+                        Button(
+                            onClick = {
+                                if (newModelCode.isNotBlank() && newModelTitle.isNotBlank()) {
+                                    viewModel.addGlobalModel(newModelCode.trim(), newModelTitle.trim())
+                                    newModelCode = ""
+                                    newModelTitle = ""
+                                    Toast.makeText(context, "مدل جدید با موفقیت به گزینه‌های سراسری برنامه اضافه گشت.", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "کد شناسه و عنوان نمایشی نباید خالی باشد.", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            modifier = Modifier.height(52.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp)
+                        ) {
+                            Text("افزودن", fontSize = 12.sp)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("لیست مدل‌های موجود و ترتیب نمایش آن:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
+                            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+                            .padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        if (globalModels.isEmpty()) {
+                            Text("هیچ مدلی ثبت نشده است.", fontSize = 11.sp, modifier = Modifier.padding(8.dp))
+                        } else {
+                            globalModels.forEach { model ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
+                                        .padding(start = 12.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(model.title, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                        Text("شناسه مدل: ${model.code}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+                                    }
+                                    IconButton(
+                                        onClick = { viewModel.moveGlobalModelUp(model) },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move Up", modifier = Modifier.size(18.dp))
+                                    }
+                                    IconButton(
+                                        onClick = { viewModel.moveGlobalModelDown(model) },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move Down", modifier = Modifier.size(18.dp))
+                                    }
+                                    IconButton(
+                                        onClick = { viewModel.deleteGlobalModel(model.code) },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                            }
                         }
                     }
                 }

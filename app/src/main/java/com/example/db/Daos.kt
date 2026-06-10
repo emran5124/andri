@@ -23,10 +23,10 @@ interface ApiKeyDao {
 
 @Dao
 interface PromptTemplateDao {
-    @Query("SELECT * FROM prompt_templates ORDER BY id DESC")
+    @Query("SELECT * FROM prompt_templates ORDER BY priorityOrder ASC, id DESC")
     fun getAllTemplatesFlow(): Flow<List<PromptTemplate>>
 
-    @Query("SELECT * FROM prompt_templates ORDER BY id DESC")
+    @Query("SELECT * FROM prompt_templates ORDER BY priorityOrder ASC, id DESC")
     suspend fun getAllTemplates(): List<PromptTemplate>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

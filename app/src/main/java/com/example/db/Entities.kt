@@ -16,7 +16,8 @@ data class ApiKeyConfig(
 data class PromptTemplate(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val title: String,
-    val promptContent: String
+    val promptContent: String,
+    val priorityOrder: Int = 0
 )
 
 @Entity(tableName = "active_session")
@@ -30,7 +31,8 @@ data class ActiveSession(
     val rawSectionsJson: String, // List of original sections
     val accumulatedSummariesJson: String, // List of summaries generated so far
     val isCompleted: Boolean = false,
-    val fileUriString: String // Store selected file URI so we can load it on restore
+    val fileUriString: String, // Store selected file URI so we can load it on restore
+    val customPrompt: String = ""
 )
 
 @Entity(tableName = "history_logs")
@@ -55,7 +57,8 @@ data class AppSettings(
     val retryAttemptsLimit: Int = 3, // retry limit before asking or switching
     val autoSwitchOnLimit: Boolean = false, // false = ask user (default), true = auto switch
     val customSeparator: String = "-----",
-    val compiledSeparatorTemplate: String = "=========\nsection {index}/{total}\n=========\n{summary}"
+    val compiledSeparatorTemplate: String = "=========\nsection {index}/{total}\n=========\n{summary}",
+    val globalModelsJson: String = ""
 )
 
 @Entity(tableName = "error_logs")
