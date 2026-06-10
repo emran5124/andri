@@ -93,11 +93,13 @@ fun MainScreen(
     val context = LocalContext.current
     val activeSession by viewModel.activeSessionFlow.collectAsState()
     var showResumeDialog by remember { mutableStateOf(false) }
+    var hasCheckedResume by remember { mutableStateOf(false) }
 
     // On start, if there is an active session, prompt user
     LaunchedEffect(activeSession) {
-        if (activeSession != null && activeSession?.isCompleted == false) {
+        if (!hasCheckedResume && activeSession != null && activeSession?.isCompleted == false && viewModel.processingState.value is ProcessingState.Idle) {
             showResumeDialog = true
+            hasCheckedResume = true
         }
     }
 

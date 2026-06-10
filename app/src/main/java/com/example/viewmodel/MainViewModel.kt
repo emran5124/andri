@@ -287,6 +287,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // Global models list management inside AppSettings
+    private fun getGlobalModelsFromSettings(settings: AppSettings?): List<ModelConfig> {
+        val json = settings?.globalModelsJson ?: ""
+        if (json.isBlank()) {
+            return listOf(
+                ModelConfig("gemini-3.5-flash", "Gemini 3.5 Flash"),
+                ModelConfig("gemini-3-flash-preview", "Gemini 3-Flash Preview"),
+                ModelConfig("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite")
+            )
+        }
+        return JsonSerializer.deserializeModels(json)
+    }
+
     fun getGlobalModels(): List<ModelConfig> {
         val json = appSettingsFlow.value?.globalModelsJson ?: ""
         if (json.isBlank()) {
@@ -301,8 +313,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun addGlobalModel(code: String, title: String) {
         viewModelScope.launch {
-            val settings = appSettingsFlow.value ?: AppSettings()
-            val currentModels = getGlobalModels().toMutableList()
+            val settings = appSettingsDao.getSettings() ?: AppSettings()
+            val currentModels = getGlobalModelsFromSettings(settings).toMutableList()
             if (currentModels.none { it.code == code }) {
                 currentModels.add(ModelConfig(code, title))
                 val updatedJson = JsonSerializer.serializeModels(currentModels)
@@ -313,8 +325,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteGlobalModel(code: String) {
         viewModelScope.launch {
-            val settings = appSettingsFlow.value ?: AppSettings()
-            val currentModels = getGlobalModels().toMutableList()
+            val settings = appSettingsDao.getSettings() ?: AppSettings()
+            val currentModels = getGlobalModelsFromSettings(settings).toMutableList()
             currentModels.removeAll { it.code == code }
             val updatedJson = JsonSerializer.serializeModels(currentModels)
             appSettingsDao.insertSettings(settings.copy(globalModelsJson = updatedJson))
@@ -323,8 +335,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun moveGlobalModelUp(model: ModelConfig) {
         viewModelScope.launch {
-            val settings = appSettingsFlow.value ?: AppSettings()
-            val currentModels = getGlobalModels().toMutableList()
+            val settings = appSettingsDao.getSettings() ?: AppSettings()
+            val currentModels = getGlobalModelsFromSettings(settings).toMutableList()
             val index = currentModels.indexOfFirst { it.code == model.code }
             if (index > 0) {
                 val temp = currentModels[index]
@@ -338,8 +350,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun moveGlobalModelDown(model: ModelConfig) {
         viewModelScope.launch {
-            val settings = appSettingsFlow.value ?: AppSettings()
-            val currentModels = getGlobalModels().toMutableList()
+            val settings = appSettingsDao.getSettings() ?: AppSettings()
+            val currentModels = getGlobalModelsFromSettings(settings).toMutableList()
             val index = currentModels.indexOfFirst { it.code == model.code }
             if (index != -1 && index < currentModels.size - 1) {
                 val temp = currentModels[index]
