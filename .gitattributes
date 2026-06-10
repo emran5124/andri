@@ -1,0 +1,4 @@
+# Treatment of binary files: assure they are treated as binary files and line endings are never changed
+*.jar binary
+*.png binary
+*.webp binary
