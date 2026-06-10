@@ -17,10 +17,8 @@ jobs:
         distribution: 'temurin'
         cache: gradle
 
-    - name: Download pristine gradle-wrapper.jar
-      run: |
-        mkdir -p gradle/wrapper
-        curl -L -o gradle/wrapper/gradle-wrapper.jar https://github.com/gradle/gradle/raw/v8.5.0/gradle/wrapper/gradle-wrapper.jar
+    - name: Re-generate pristine Gradle Wrapper
+      run: gradle wrapper
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
