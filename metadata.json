@@ -1,0 +1,6 @@
+{
+  "name": "Gemini Summarizer",
+  "description": "An elegant Material 3 Android app to summarize .txt files using the Gemini API and save summaries in the Downloads folder.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
