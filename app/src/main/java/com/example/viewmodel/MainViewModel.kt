@@ -949,70 +949,193 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return sections
     }
 
+    // ─── CONTENT PARSER ──────────────────────────────────────────────────────────
+    /**
+    * Convert raw Markdown + custom syntax lines into an HTML string.
+    *
+    * Parsing precedence:
+    *   1. Escape sequences (\* \[ etc.)
+    *   2. Code blocks (``` … ```)
+    *   3. Inline code (`…`)
+    *   4. Headings (#…)
+    *   5. Blockquotes (>)
+    *   6. Tables (|…|)
+    *   7. HR (---, ***)
+    *   8. Lists (- / * / 1.)
+    *   9. Links & Images
+    *  10. Bold / Italic
+    *  11. Custom highlight (<<>>, [[]], (()), ««»»)
+    *  12. Custom color ([text], (text), «text», <text>)
+    *  13. Line breaks
+    */
     private fun parseContent(rawLines: List<String>): String {
+        // Join lines for block-level parsing
+        val raw = rawLines.joinToString("\n")
+
+        // ── 1. Protect escape sequences ──────────────────────────────────────────
+        val escapes = mutableListOf<String>()
+        var text = raw.replace(Regex("""\\([*_`\[\]()~<>«»!#|\\])""")) { matchResult ->
+            val ch = matchResult.groupValues[1]
+            val idx = escapes.size
+            escapes.add(ch)
+            "\u0000ESC${idx}\u0000"
+        }
+
+        // ── 2. Code blocks ───────────────────────────────────────────────────────
+        val codeBlocks = mutableListOf<String>()
+        text = text.replace(Regex("""```([\w]*)\n?([\s\S]*?)```""")) { matchResult ->
+            val lang = matchResult.groupValues[1]
+            val code = matchResult.groupValues[2]
+            val idx = codeBlocks.size
+            codeBlocks.add(
+                "<pre class=\"code-block\" data-lang=\"${escapeHtml(lang)}\"><code>${escapeHtml(code.trim())}</code></pre>"
+            )
+            "\u0000CB${idx}\u0000"
+        }
+
+        // ── 3. Inline code ───────────────────────────────────────────────────────
+        val inlineCode = mutableListOf<String>()
+        text = text.replace(Regex("""`([^`\n]+?)`""")) { matchResult ->
+            val code = matchResult.groupValues[1]
+            val idx = inlineCode.size
+            inlineCode.add("<code class=\"inline-code\">${escapeHtml(code)}</code>")
+            "\u0000IC${idx}\u0000"
+        }
+
+        // Split into lines for block-level processing
+        val lines = text.split("\n")
+
         val outputBlocks = mutableListOf<String>()
-        val listBuffer = mutableListOf<String>()
+        val listBuffer = mutableListOf<Pair<Int, String>>() // { depth, content }
         var listOrdered = false
 
         fun flushList() {
             if (listBuffer.isEmpty()) return
-            val tag = if (listOrdered) "ol" else "ul"
-            val html = StringBuilder("<$tag class=\"md-list\">")
-            for (item in listBuffer) {
-                html.append("<li>").append(item).append("</li>")
-            }
-            html.append("</$tag>")
-            outputBlocks.add(html.toString())
+            outputBlocks.add(renderList(listBuffer, listOrdered))
             listBuffer.clear()
         }
 
-        for (line in rawLines) {
+        fun renderList(items: List<Pair<Int, String>>, ordered: Boolean): String {
+            val tag = if (ordered) "ol" else "ul"
+            val html = StringBuilder("<$tag class=\"md-list\">")
+            for ((_, content) in items) {
+                html.append("<li>").append(content).append("</li>")
+            }
+            html.append("</$tag>")
+            return html.toString()
+        }
+
+        // Block table accumulator
+        val tableBuffer = mutableListOf<String>()
+
+        fun flushTable() {
+            if (tableBuffer.size < 2) {
+                tableBuffer.forEach { l -> outputBlocks.add("<p>${applyInline(l)}</p>") }
+                tableBuffer.clear()
+                return
+            }
+            val html = StringBuilder("<div class=\"table-wrap\"><table class=\"md-table\"><thead><tr>")
+            val headers = tableBuffer[0].split("|").filter { it.trim().isNotEmpty() }
+            headers.forEach { h -> html.append("<th>").append(applyInline(h.trim())).append("</th>") }
+            html.append("</tr></thead><tbody>")
+            for (i in 2 until tableBuffer.size) {
+                html.append("<tr>")
+                tableBuffer[i].split("|").filter { it.trim().isNotEmpty() }.forEach { c ->
+                    html.append("<td>").append(applyInline(c.trim())).append("</td>")
+                }
+                html.append("</tr>")
+            }
+            html.append("</tbody></table></div>")
+            outputBlocks.add(html.toString())
+            tableBuffer.clear()
+        }
+
+        for (i in lines.indices) {
+            val line = lines[i]
             val trimmed = line.trim()
-            if (trimmed.isEmpty()) {
+
+            // ── Code block placeholder ─────────────────────────────────────────────
+            if (Regex("""^\u0000CB\d+\u0000$""").matches(trimmed)) {
                 flushList()
-                outputBlocks.add("<p-break/>")
+                flushTable()
+                outputBlocks.add(trimmed) // placeholder, restored later
                 continue
             }
 
-            val olMatch = Regex("^(\\s*)(\\d+)\\.\\s+(.+)$").find(line)
-            if (olMatch != null) {
-                if (listBuffer.isNotEmpty() && !listOrdered) flushList()
-                listOrdered = true
-                listBuffer.add(applyInline(olMatch.groupValues[3]))
+            // ── Horizontal rule ────────────────────────────────────────────────────
+            if (Regex("""^[-*_]{3,}\s*$""").matches(trimmed)) {
+                flushList()
+                flushTable()
+                outputBlocks.add("<hr class=\"md-hr\">")
                 continue
             }
 
-            val ulMatch = Regex("^(\\s*)[-*+]\\s+(.+)$").find(line)
-            if (ulMatch != null) {
-                if (listBuffer.isNotEmpty() && listOrdered) flushList()
-                listOrdered = false
-                listBuffer.add(applyInline(ulMatch.groupValues[2]))
+            // ── Heading ────────────────────────────────────────────────────────────
+            val hMatch = Regex("""^(#{1,6})\s+(.+)$""").find(trimmed)
+            if (hMatch != null) {
+                flushList()
+                flushTable()
+                val level = hMatch.groupValues[1].length
+                val content = applyInline(hMatch.groupValues[2])
+                outputBlocks.add("<h$level class=\"md-h$level\">$content</h$level>")
                 continue
             }
 
+            // ── Blockquote ─────────────────────────────────────────────────────────
             if (trimmed.startsWith(">")) {
                 flushList()
-                val inner = applyInline(trimmed.substring(1).trim())
+                flushTable()
+                val inner = applyInline(trimmed.removePrefix(">").trim())
                 outputBlocks.add("<blockquote class=\"md-blockquote\">$inner</blockquote>")
                 continue
             }
 
-            val hMatch = Regex("^(#{1,6})\\s+(.+)$").find(trimmed)
-            if (hMatch != null) {
+            // ── Table row ──────────────────────────────────────────────────────────
+            if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
                 flushList()
-                val level = hMatch.groupValues[1].length
-                val inner = applyInline(hMatch.groupValues[2])
-                outputBlocks.add("<h$level class=\"md-h$level\">$inner</h$level>")
+                tableBuffer.add(trimmed.removeSurrounding("|")) // strip leading/trailing |
+                continue
+            } else if (tableBuffer.isNotEmpty()) {
+                flushTable()
+            }
+
+            // ── Ordered list ───────────────────────────────────────────────────────
+            val olMatch = Regex("""^(\s*)(\d+)\.\s+(.+)$""").find(line)
+            if (olMatch != null) {
+                if (listBuffer.isNotEmpty() && !listOrdered) flushList()
+                listOrdered = true
+                val depth = olMatch.groupValues[1].length / 2
+                listBuffer.add(Pair(depth, applyInline(olMatch.groupValues[3])))
                 continue
             }
 
-            if (listBuffer.isNotEmpty()) {
-                flushList()
+            // ── Unordered list ─────────────────────────────────────────────────────
+            val ulMatch = Regex("""^(\s*)[-*+]\s+(.+)$""").find(line)
+            if (ulMatch != null) {
+                if (listBuffer.isNotEmpty() && listOrdered) flushList()
+                listOrdered = false
+                val depth = ulMatch.groupValues[1].length / 2
+                listBuffer.add(Pair(depth, applyInline(ulMatch.groupValues[2])))
+                continue
             }
+
+            // Not a list item — flush pending list
+            if (listBuffer.isNotEmpty()) flushList()
+
+            // ── Empty line → paragraph break ───────────────────────────────────────
+            if (trimmed.isEmpty()) {
+                outputBlocks.add("<p-break/>")
+                continue
+            }
+
+            // ── Regular paragraph line ─────────────────────────────────────────────
             outputBlocks.add(applyInline(trimmed))
         }
-        flushList()
 
+        flushList()
+        flushTable()
+
+        // Merge consecutive paragraph lines into <p> blocks
         val html = StringBuilder()
         val paraLines = mutableListOf<String>()
 
@@ -1024,7 +1147,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         for (block in outputBlocks) {
-            if (block.startsWith("<h") || block.startsWith("<blockquote") || block.startsWith("<ul") || block.startsWith("<ol") || block == "<p-break/>") {
+            if (block.startsWith("<h") ||
+                block.startsWith("<pre") ||
+                block.startsWith("<blockquote") ||
+                block.startsWith("<ul") ||
+                block.startsWith("<ol") ||
+                block.startsWith("<hr") ||
+                block.startsWith("<div") ||
+                block == "<p-break/>" ||
+                Regex("""^\u0000CB\d+\u0000$""").matches(block)
+            ) {
                 flushPara()
                 if (block != "<p-break/>") {
                     html.append(block)
@@ -1035,7 +1167,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         flushPara()
 
-        return html.toString()
+        // ── Restore placeholders ─────────────────────────────────────────────────
+        var result = html.toString()
+        result = result.replace(Regex("""\u0000CB(\d+)\u0000""")) { matchResult ->
+            val i = matchResult.groupValues[1].toInt()
+            codeBlocks[i]
+        }
+        result = result.replace(Regex("""\u0000IC(\d+)\u0000""")) { matchResult ->
+            val i = matchResult.groupValues[1].toInt()
+            inlineCode[i]
+        }
+        result = result.replace(Regex("""\u0000ESC(\d+)\u0000""")) { matchResult ->
+            val i = matchResult.groupValues[1].toInt()
+            escapeHtml(escapes[i])
+        }
+
+        return result
     }
 
     private fun applyInline(text: String): String {
