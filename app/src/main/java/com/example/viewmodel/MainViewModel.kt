@@ -1263,33 +1263,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .trim()
     }
 
-    private fun bookToJson(sections: List<SecParsed>): String {
-        val sb = java.lang.StringBuilder()
-        sb.append("{\"sections\":[")
-        for (i in sections.indices) {
-            val sec = sections[i]
-            sb.append("{")
-            sb.append("\"title\":").append(kotlinJsonEscape(sec.title)).append(",")
-            sb.append("\"chapters\":[")
-            for (j in sec.chapters.indices) {
-                val ch = sec.chapters[j]
+    private fun buildBookModel(sections: List<SecParsed>): Map<String, Any> {
+        val book = mutableListOf<Map<String, Any>>()
+        
+        for (sec in sections) {
+            val chapters = mutableListOf<Map<String, String>>()
+            
+            for (ch in sec.chapters) {
                 val htmlContent = parseContent(ch.rawLines)
                 val plainText = ch.rawLines.joinToString(" ")
                 
-                sb.append("{")
-                sb.append("\"title\":").append(kotlinJsonEscape(ch.title)).append(",")
-                sb.append("\"html\":").append(kotlinJsonEscape(htmlContent)).append(",")
-                sb.append("\"search\":").append(kotlinJsonEscape(normaliseArabic(plainText))).append(",")
-                sb.append("\"plain\":").append(kotlinJsonEscape(if (plainText.length > 300) plainText.substring(0, 300) else plainText))
-                sb.append("}")
-                if (j < sec.chapters.size - 1) sb.append(",")
+                chapters.add(mapOf(
+                    "title" to ch.title,
+                    "html" to htmlContent,
+                    "search" to normaliseArabic(plainText),
+                    "plain" to plainText.take(300)
+                ))
             }
-            sb.append("]")
-            sb.append("}")
-            if (i < sections.size - 1) sb.append(",")
+            
+            book.add(mapOf(
+                "title" to sec.title,
+                "chapters" to chapters
+            ))
         }
-        sb.append("]}")
-        return sb.toString()
+        
+        return mapOf("sections" to book)
     }
 
     private fun kotlinJsonEscape(str: String): String {
