@@ -1262,6 +1262,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .lowercase()
             .trim()
     }
+    private fun mapToJson(obj: Any?): String {
+        return when (obj) {
+            is Map<*, *> -> {
+                val entries = obj.entries.joinToString(",") { (k, v) ->
+                    // کلید همیشه String است و kotlinJsonEscape خودش " " را اضافه می‌کند
+                    "${kotlinJsonEscape(k as String)}:${mapToJson(v)}"
+                }
+                "{$entries}"
+            }
+            is List<*> -> {
+                val items = obj.joinToString(",") { mapToJson(it) }
+                "[$items]"
+            }
+            is String -> kotlinJsonEscape(obj)   // kotlinJsonEscape "..." را برمی‌گرداند
+            else -> "\"${obj.toString()}\""      // fallback (بعید است پیش بیاید)
+        }
+    }
+
 
     private fun buildBookModel(sections: List<SecParsed>): Map<String, Any> {
         val book = mutableListOf<Map<String, Any>>()
@@ -1290,6 +1308,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return mapOf("sections" to book)
     }
 
+
     private fun kotlinJsonEscape(str: String): String {
         val out = java.lang.StringBuilder()
         out.append("\"")
@@ -1313,16 +1332,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return out.toString()
     }
 
+
     fun generateHtmlFromSummaries(fileName: String, summaries: List<String>): String {
         val rawText = summaries.joinToString("\n🚩 [بخش خلاصه] 🚩\n")
         val parsed = parseStructure(rawText)
 
-        // دقیقاً مثل JS: اول book رو می‌سازیم
         val book = buildBookModel(parsed)
-        
-        // بعد مثل JSON.stringify تبدیل می‌کنیم به رشته
-        val bookJson = JsonObject(book).toString()  // یا هر serializer دیگه‌ای که دارید
-        
+        // جایگزین خط مشکل‌دار: بدون JsonObject
+        val bookJson = mapToJson(book)
+
         val randSuffix = java.util.UUID.randomUUID().toString().take(6)
         val lsPrefix = "\"perBook_$randSuffix\""
 
