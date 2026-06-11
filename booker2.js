@@ -1,1182 +1,577 @@
-package com.example.viewmodel
+/**
+ * ============================================================
+ * PERSIAN/ARABIC BOOK READER — book-reader.mjs
+ * ============================================================
+ *
+ * ARCHITECTURE OVERVIEW
+ * ─────────────────────
+ * This script converts a structured TXT/MD file into a single
+ * standalone HTML file optimised for reading long Persian/Arabic
+ * summaries on any device.
+ *
+ * Pipeline
+ * ────────
+ *   1. FILE READER          reads raw UTF-8 text from disk
+ *   2. STRUCTURE PARSER     splits text into Sections → Chapters
+ *   3. CONTENT PARSER       converts markdown + custom syntax
+ *                           to HTML (deterministic, precedence-safe)
+ *   4. SEARCH INDEXER       builds a flat index (section/chapter/text)
+ *                           with diacritic-stripped normalised keys
+ *   5. HTML ASSEMBLER       wraps everything into one self-contained
+ *                           .html file with embedded CSS + JS
+ *   6. FILE WRITER          writes output to disk
+ *
+ * Rendering strategy (inside the HTML runtime)
+ * ─────────────────────────────────────────────
+ *   - BOOK data is embedded as a JSON blob in the HTML
+ *   - Only 3 chapters are mounted at any time (prev / current / next)
+ *   - IntersectionObserver drives lazy load / unload of chapter DOM
+ *   - Search is performed on the pre-built index; results are
+ *     virtualised when they exceed a threshold
+ *   - All settings, theme, position are persisted via localStorage
+ *
+ * RTL / Bidi strategy
+ * ───────────────────
+ *   - The root element carries dir="rtl" + lang="fa"
+ *   - LTR islands (English words, numbers) are wrapped in
+ *     <span class="ltr"> with unicode-bidi:isolate
+ *   - Mixed lines use CSS logical properties throughout
+ * applyInline() -> colorizing da text
+ * ============================================================
+ */
 
-import android.app.Application
-import android.content.ContentValues
-import android.content.Context
-import android.net.Uri
-import android.os.Build
-import android.os.Environment
-import android.provider.MediaStore
-import android.provider.OpenableColumns
-import android.util.Log
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import com.example.BuildConfig
-import com.example.api.Content
-import com.example.api.GenerateContentRequest
-import com.example.api.JsonSerializer
-import com.example.api.Part
-import com.example.api.RetrofitClient
-import com.example.db.ActiveSession
-import com.example.db.ApiKeyConfig
-import com.example.db.AppDatabase
-import com.example.db.AppSettings
-import com.example.db.HistoryLog
-import com.example.db.ErrorLog
-import com.example.db.ModelConfig
-import com.example.db.PromptTemplate
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.firstOrNull
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import retrofit2.HttpException
-import java.io.File
-import java.io.FileOutputStream
+import { readFileSync, writeFileSync } from 'fs';
+import { resolve } from 'path';
 
-sealed interface ProcessingState {
-    object Idle : ProcessingState
-    data class Loading(val message: String) : ProcessingState
-    data class Success(
-        val summary: String,
-        val savedPath: String,
-        val savedHtmlPath: String = "",
-        val textFileUri: String = "",
-        val htmlFileUri: String = "",
-        val htmlContent: String = ""
-    ) : ProcessingState
-    data class Error(val error: String) : ProcessingState
-    
-    data class Running(
-        val originalFileName: String,
-        val currentSection: Int,
-        val totalSections: Int,
-        val retriesLeft: Int,
-        val activeKeyTitle: String,
-        val activeModelTitle: String,
-        val statusMessage: String
-    ) : ProcessingState
-    
-    data class WaitingForUserDecision(
-        val sectionIndex: Int,
-        val errorMsg: String,
-        val keyIndex: Int,
-        val modelIndex: Int
-    ) : ProcessingState
-    
-    data class VpnBlockError(
-        val sectionIndex: Int,
-        val errorMsg: String
-    ) : ProcessingState
+// ─── CONFIGURATION ────────────────────────────────────────────────────────────
+//ca
+const CONFIG = {
+  // ── paths ──────────────────────────────────────────────────────────────────
+  INPUT_PATH : './daw.txt',    // <-- set your source TXT/MD file path here
+  OUTPUT_PATH: './dawah.html',  // <-- set your desired output HTML path here
+
+  // ── font mode ──────────────────────────────────────────────────────────────
+  // 'system'   → uses system fonts (Tahoma, Vazir, etc.) — zero extra size
+  // 'local'    → embed a local font file: set LOCAL_FONT_PATH + LOCAL_FONT_FAMILY
+  // 'file'     → serve from a local path (link href, not embedded)
+  FONT_MODE: 'system',
+
+  LOCAL_FONT_PATH  : './font.woff2',     // path to font file (for 'local' mode)
+  LOCAL_FONT_FAMILY: 'CustomFont',       // family name to assign
+  LOCAL_FONT_FILE  : './font.woff2',     // href for 'file' mode
+};
+
+// ─── UTILITY ──────────────────────────────────────────────────────────────────
+
+/**
+ * Escape HTML special characters in a raw string.
+ * Used for code blocks and attribute values.
+ */
+function escapeHtml(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
-class MainViewModel(application: Application) : AndroidViewModel(application) {
+/**
+ * Strip Arabic/Persian diacritics, tatweel, zero-width chars,
+ * and normalise common variant letters for search indexing.
+ */
+function normaliseArabic(str) {
+  return str
+    // normalise variant letters
+    .replace(/ي/g, 'ی')
+    .replace(/ك/g, 'ک')
+    // remove tatweel
+    .replace(/ـ/g, '')
+    // remove diacritics (harakat)
+    .replace(/[\u064B-\u065F\u0670]/g, '')
+    // remove zero-width chars
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, '')
+    .toLowerCase()
+    .trim();
+}
 
-    private val db = AppDatabase.getDatabase(application, viewModelScope)
-    private val apiKeyDao = db.apiKeyDao()
-    private val promptTemplateDao = db.promptTemplateDao()
-    private val activeSessionDao = db.activeSessionDao()
-    private val historyLogsDao = db.historyLogsDao()
-    private val appSettingsDao = db.appSettingsDao()
-    private val errorLogDao = db.errorLogDao()
+// ─── STRUCTURE PARSER ─────────────────────────────────────────────────────────
 
-    // Database Flows
-    val apiKeysFlow: StateFlow<List<ApiKeyConfig>> = apiKeyDao.getAllApiKeysFlow()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+/**
+ * Split raw text into a structured book model:
+ *   Book → Section[] → Chapter[]
+ *
+ * Delimiters:
+ *   Section : ======================== / TITLE / ========================
+ *   Chapter : 🚩[TITLE]🚩  (or variations: 🚩 TITLE 🚩)
+ */
+function parseStructure(rawText) {
+  const lines = rawText.split(/\r?\n/);
 
-    val promptTemplatesFlow: StateFlow<List<PromptTemplate>> = promptTemplateDao.getAllTemplatesFlow()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+  const SECTION_SEP = /^={10,}\s*$/;                       // ====...====
+  const CHAPTER_PAT = /^🚩\s*\[(.+?)\]\s*🚩\s*$/;         // 🚩[title]🚩
+  const CHAPTER_PAT2 = /^🚩\s*(.+?)\s*🚩\s*$/;            // 🚩title🚩
 
-    val activeSessionFlow: StateFlow<ActiveSession?> = activeSessionDao.getActiveSessionFlow()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+  const sections = [];
+  let currentSection = null;
+  let currentChapter = null;
+  let pendingTitle = null;   // section title found between ===...===
+  let inSep = false;
 
-    val historyLogsFlow: StateFlow<List<HistoryLog>> = historyLogsDao.getAllHistoryFlow()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+  function flushChapter() {
+    if (currentChapter) {
+      currentSection.chapters.push(currentChapter);
+      currentChapter = null;
+    }
+  }
 
-    val appSettingsFlow: StateFlow<AppSettings?> = appSettingsDao.getSettingsFlow()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+  function flushSection() {
+    if (currentSection) {
+      flushChapter();
+      // If a section has no chapters, create one default chapter
+      if (currentSection.chapters.length === 0) {
+        currentSection.chapters.push({
+          title: currentSection.title,
+          rawLines: currentSection._buf || [],
+        });
+      }
+      delete currentSection._buf;
+      sections.push(currentSection);
+      currentSection = null;
+    }
+  }
 
-    val errorLogsFlow: StateFlow<List<ErrorLog>> = errorLogDao.getAllErrorLogsFlow()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
 
-    val globalModelsFlow: StateFlow<List<ModelConfig>> = appSettingsFlow
-        .map { settings ->
-            val json = settings?.globalModelsJson ?: ""
-            if (json.isBlank()) {
-                listOf(
-                    ModelConfig("gemini-3.5-flash", "Gemini 3.5 Flash"),
-                    ModelConfig("gemini-3-flash-preview", "Gemini 3 Flash"),
-                    ModelConfig("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite")
-                )
-            } else {
-                JsonSerializer.deserializeModels(json)
-            }
+    // Detect section separator (=====)
+    if (SECTION_SEP.test(line)) {
+      if (!inSep) {
+        // Opening separator: peek ahead for title
+        inSep = true;
+        pendingTitle = null;
+      } else {
+        // Closing separator: we have a title between the two
+        inSep = false;
+        if (pendingTitle !== null) {
+          flushSection();
+          currentSection = {
+            title   : pendingTitle.trim(),
+            chapters: [],
+            _buf    : [],
+          };
+          currentChapter = null;
+          pendingTitle = null;
         }
-        .stateIn(
-            viewModelScope,
-            SharingStarted.WhileSubscribed(5000),
-            listOf(
-                ModelConfig("gemini-3.5-flash", "Gemini 3.5 Flash"),
-                ModelConfig("gemini-3-flash-preview", "Gemini 3 Flash"),
-                ModelConfig("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite")
-            )
-        )
-
-    // Selection States
-    private val _selectedFileUri = MutableStateFlow<Uri?>(null)
-    val selectedFileUri: StateFlow<Uri?> = _selectedFileUri.asStateFlow()
-
-    private val _selectedFileName = MutableStateFlow<String?>(null)
-    val selectedFileName: StateFlow<String?> = _selectedFileName.asStateFlow()
-
-    private val _selectedFileSize = MutableStateFlow<Long?>(null)
-    val selectedFileSize: StateFlow<Long?> = _selectedFileSize.asStateFlow()
-
-    private val _outputFileName = MutableStateFlow("")
-    val outputFileName: StateFlow<String> = _outputFileName.asStateFlow()
-
-    private val _selectedPromptId = MutableStateFlow<Int?>(null)
-    val selectedPromptId: StateFlow<Int?> = _selectedPromptId.asStateFlow()
-
-    private val _processingState = MutableStateFlow<ProcessingState>(ProcessingState.Idle)
-    val processingState: StateFlow<ProcessingState> = _processingState.asStateFlow()
-
-    private var fileContent: String = ""
-    private var processingJob: Job? = null
-
-    // Execution Pointer State for fallback tracking
-    private var activeKeyIndex = 0
-    private var activeModelIndex = 0
-    private var currentRetryCount = 0
-
-    init {
-        // Ensure settings are pre-populated
-        viewModelScope.launch {
-            if (appSettingsDao.getSettings() == null) {
-                appSettingsDao.insertSettings(AppSettings())
-            }
-        }
+      }
+      continue;
     }
 
-    // Settings actions
-    fun updateSettings(settings: AppSettings) {
-        viewModelScope.launch {
-            appSettingsDao.insertSettings(settings)
-        }
+    // If we're between two separators, this line is the title
+    if (inSep) {
+      pendingTitle = (pendingTitle === null ? '' : pendingTitle + '\n') + line;
+      continue;
     }
 
-    // API Key actions
-    fun addApiKey(title: String, apiKey: String, models: List<ModelConfig>) {
-        viewModelScope.launch {
-            val keys = apiKeyDao.getAllApiKeys()
-            val nextOrder = (keys.maxByOrNull { it.priorityOrder }?.priorityOrder ?: 0) + 1
-            val jsonModels = JsonSerializer.serializeModels(models)
-            apiKeyDao.insertApiKey(
-                ApiKeyConfig(
-                    title = title,
-                    apiKey = apiKey,
-                    priorityOrder = nextOrder,
-                    modelsJson = jsonModels
-                )
-            )
-        }
+    // Check for chapter marker
+    let chapterTitle = null;
+    const m1 = CHAPTER_PAT.exec(line);
+    const m2 = !m1 && CHAPTER_PAT2.exec(line);
+    if (m1) chapterTitle = m1[1].trim();
+    else if (m2) chapterTitle = m2[1].trim();
+
+    if (chapterTitle) {
+      if (!currentSection) {
+        // Chapter outside any section → create implicit section
+        currentSection = { title: chapterTitle, chapters: [], _buf: [] };
+      }
+      flushChapter();
+      currentChapter = { title: chapterTitle, rawLines: [] };
+      continue;
     }
 
-    fun deleteApiKey(id: Int) {
-        viewModelScope.launch {
-            apiKeyDao.deleteApiKeyById(id)
-        }
+    // Regular content line
+    if (currentChapter) {
+      currentChapter.rawLines.push(line);
+    } else if (currentSection) {
+      currentSection._buf.push(line);
+    }
+    // Lines before any section are silently ignored (could be a preamble)
+  }
+
+  // Flush remaining
+  flushSection();
+
+  return { sections };
+}
+
+// ─── CONTENT PARSER ──────────────────────────────────────────────────────────
+
+/**
+ * Convert raw Markdown + custom syntax lines into an HTML string.
+ *
+ * Parsing precedence:
+ *   1. Escape sequences (\* \[ etc.)
+ *   2. Code blocks (``` … ```)
+ *   3. Inline code (`…`)
+ *   4. Headings (#…)
+ *   5. Blockquotes (>)
+ *   6. Tables (|…|)
+ *   7. HR (---, ***)
+ *   8. Lists (- / * / 1.)
+ *   9. Links & Images
+ *  10. Bold / Italic
+ *  11. Custom highlight (<<>>, [[]], (()), ««»»)
+ *  12. Custom color ([text], (text), «text», <text>)
+ *  13. Line breaks
+ */
+function parseContent(rawLines) {
+  // Join lines for block-level parsing
+  const raw = rawLines.join('\n');
+
+  // ── 1. Protect escape sequences ──────────────────────────────────────────
+  const ESCAPES = [];
+  let text = raw.replace(/\\([*_`\[\]()~<>«»!#|\\])/g, (_, ch) => {
+    const idx = ESCAPES.push(ch) - 1;
+    return `\x00ESC${idx}\x00`;
+  });
+
+  // ── 2. Code blocks ───────────────────────────────────────────────────────
+  const CODE_BLOCKS = [];
+  text = text.replace(/```([\w]*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const idx = CODE_BLOCKS.push(
+      `<pre class="code-block" data-lang="${escapeHtml(lang)}"><code>${escapeHtml(code.trim())}</code></pre>`
+    ) - 1;
+    return `\x00CB${idx}\x00`;
+  });
+
+  // ── 3. Inline code ───────────────────────────────────────────────────────
+  const INLINE_CODE = [];
+  text = text.replace(/`([^`\n]+?)`/g, (_, code) => {
+    const idx = INLINE_CODE.push(`<code class="inline-code">${escapeHtml(code)}</code>`) - 1;
+    return `\x00IC${idx}\x00`;
+  });
+
+  // Split into lines for block-level processing
+  let lines = text.split('\n');
+
+  const outputBlocks = [];
+  let listBuffer = [];   // { ordered: bool, items: [{depth, content}] }
+  let listOrdered = false;
+
+  function flushList() {
+    if (listBuffer.length === 0) return;
+    outputBlocks.push(renderList(listBuffer, listOrdered));
+    listBuffer = [];
+  }
+
+  function renderList(items, ordered) {
+    const tag = ordered ? 'ol' : 'ul';
+    let html = `<${tag} class="md-list">`;
+    for (const item of items) {
+      html += `<li>${item.content}</li>`;
+    }
+    html += `</${tag}>`;
+    return html;
+  }
+
+  // Block table accumulator
+  let tableBuffer = [];
+
+  function flushTable() {
+    if (tableBuffer.length < 2) {
+      tableBuffer.forEach(l => outputBlocks.push(`<p>${applyInline(l)}</p>`));
+      tableBuffer = [];
+      return;
+    }
+    let html = '<div class="table-wrap"><table class="md-table"><thead><tr>';
+    const headers = tableBuffer[0].split('|').filter(c => c.trim());
+    headers.forEach(h => { html += `<th>${applyInline(h.trim())}</th>`; });
+    html += '</tr></thead><tbody>';
+    for (let i = 2; i < tableBuffer.length; i++) {
+      html += '<tr>';
+      tableBuffer[i].split('|').filter(c => c.trim()).forEach(c => {
+        html += `<td>${applyInline(c.trim())}</td>`;
+      });
+      html += '</tr>';
+    }
+    html += '</tbody></table></div>';
+    outputBlocks.push(html);
+    tableBuffer = [];
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    // Restore code blocks / inline code placeholders for later
+    // (they pass through unchanged until final restoration)
+
+    // ── Code block placeholder ─────────────────────────────────────────────
+    if (/^\x00CB\d+\x00$/.test(trimmed)) {
+      flushList();
+      flushTable();
+      outputBlocks.push(trimmed); // placeholder, restored later
+      continue;
     }
 
-    fun moveApiKeyUp(key: ApiKeyConfig) {
-        viewModelScope.launch {
-            val keys = apiKeyDao.getAllApiKeys()
-            val currentIndex = keys.indexOfFirst { it.id == key.id }
-            if (currentIndex > 0) {
-                val prevKey = keys[currentIndex - 1]
-                val updatedPrevOrder = key.priorityOrder
-                val updatedCurrentOrder = prevKey.priorityOrder
-                apiKeyDao.insertApiKey(key.copy(priorityOrder = updatedCurrentOrder))
-                apiKeyDao.insertApiKey(prevKey.copy(priorityOrder = updatedPrevOrder))
-            }
-        }
+    // ── Horizontal rule ────────────────────────────────────────────────────
+    if (/^[-*_]{3,}\s*$/.test(trimmed)) {
+      flushList();
+      flushTable();
+      outputBlocks.push('<hr class="md-hr">');
+      continue;
     }
 
-    fun moveApiKeyDown(key: ApiKeyConfig) {
-        viewModelScope.launch {
-            val keys = apiKeyDao.getAllApiKeys()
-            val currentIndex = keys.indexOfFirst { it.id == key.id }
-            if (currentIndex != -1 && currentIndex < keys.size - 1) {
-                val nextKey = keys[currentIndex + 1]
-                val updatedNextOrder = key.priorityOrder
-                val updatedCurrentOrder = nextKey.priorityOrder
-                apiKeyDao.insertApiKey(key.copy(priorityOrder = updatedCurrentOrder))
-                apiKeyDao.insertApiKey(nextKey.copy(priorityOrder = updatedNextOrder))
-            }
-        }
+    // ── Heading ────────────────────────────────────────────────────────────
+    const hMatch = /^(#{1,6})\s+(.+)$/.exec(trimmed);
+    if (hMatch) {
+      flushList();
+      flushTable();
+      const level = hMatch[1].length;
+      const content = applyInline(hMatch[2]);
+      outputBlocks.push(`<h${level} class="md-h${level}">${content}</h${level}>`);
+      continue;
     }
 
-    // Prompt templates actions
-    fun addPromptTemplate(title: String, prompt: String) {
-        viewModelScope.launch {
-            val existing = promptTemplateDao.getAllTemplates()
-            val order = if (existing.isEmpty()) 0 else (existing.maxOfOrNull { it.priorityOrder } ?: 0) + 1
-            promptTemplateDao.insertTemplate(
-                PromptTemplate(title = title, promptContent = prompt, priorityOrder = order)
-            )
-        }
+    // ── Blockquote ─────────────────────────────────────────────────────────
+    if (trimmed.startsWith('>')) {
+      flushList();
+      flushTable();
+      const inner = applyInline(trimmed.slice(1).trim());
+      outputBlocks.push(`<blockquote class="md-blockquote">${inner}</blockquote>`);
+      continue;
     }
 
-    fun updatePromptTemplate(id: Int, title: String, prompt: String, priorityOrder: Int) {
-        viewModelScope.launch {
-            promptTemplateDao.updateTemplate(
-                PromptTemplate(id = id, title = title, promptContent = prompt, priorityOrder = priorityOrder)
-            )
-        }
+    // ── Table row ──────────────────────────────────────────────────────────
+    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+      flushList();
+      tableBuffer.push(trimmed.slice(1, -1)); // strip leading/trailing |
+      continue;
+    } else if (tableBuffer.length) {
+      flushTable();
     }
 
-    fun movePromptTemplateUp(template: PromptTemplate) {
-        viewModelScope.launch {
-            val templates = promptTemplateDao.getAllTemplates()
-            val currentIndex = templates.indexOfFirst { it.id == template.id }
-            if (currentIndex > 0) {
-                val prevTemplate = templates[currentIndex - 1]
-                val updatedPrevOrder = template.priorityOrder
-                val updatedCurrentOrder = prevTemplate.priorityOrder
-                promptTemplateDao.insertTemplate(template.copy(priorityOrder = updatedCurrentOrder))
-                promptTemplateDao.insertTemplate(prevTemplate.copy(priorityOrder = updatedPrevOrder))
-            }
-        }
+    // ── Ordered list ───────────────────────────────────────────────────────
+    const olMatch = /^(\s*)(\d+)\.\s+(.+)$/.exec(line);
+    if (olMatch) {
+      if (listBuffer.length && !listOrdered) flushList();
+      listOrdered = true;
+      listBuffer.push({ depth: olMatch[1].length / 2, content: applyInline(olMatch[3]) });
+      continue;
     }
 
-    fun movePromptTemplateDown(template: PromptTemplate) {
-        viewModelScope.launch {
-            val templates = promptTemplateDao.getAllTemplates()
-            val currentIndex = templates.indexOfFirst { it.id == template.id }
-            if (currentIndex != -1 && currentIndex < templates.size - 1) {
-                val nextTemplate = templates[currentIndex + 1]
-                val updatedNextOrder = template.priorityOrder
-                val updatedCurrentOrder = nextTemplate.priorityOrder
-                promptTemplateDao.insertTemplate(template.copy(priorityOrder = updatedCurrentOrder))
-                promptTemplateDao.insertTemplate(nextTemplate.copy(priorityOrder = updatedNextOrder))
-            }
-        }
+    // ── Unordered list ─────────────────────────────────────────────────────
+    const ulMatch = /^(\s*)[-*+]\s+(.+)$/.exec(line);
+    if (ulMatch) {
+      if (listBuffer.length && listOrdered) flushList();
+      listOrdered = false;
+      listBuffer.push({ depth: ulMatch[1].length / 2, content: applyInline(ulMatch[2]) });
+      continue;
     }
 
-    fun deletePromptTemplate(id: Int) {
-        viewModelScope.launch {
-            promptTemplateDao.deleteTemplateById(id)
-        }
+    // Not a list item — flush pending list
+    if (listBuffer.length) flushList();
+
+    // ── Empty line → paragraph break ───────────────────────────────────────
+    if (trimmed === '') {
+      outputBlocks.push('<p-break/>');
+      continue;
     }
 
-    fun duplicatePromptTemplate(template: PromptTemplate) {
-        viewModelScope.launch {
-            val existing = promptTemplateDao.getAllTemplates()
-            val order = if (existing.isEmpty()) 0 else (existing.maxOfOrNull { it.priorityOrder } ?: 0) + 1
-            promptTemplateDao.insertTemplate(
-                PromptTemplate(title = "${template.title} (کپی)", promptContent = template.promptContent, priorityOrder = order)
-            )
-        }
+    // ── Regular paragraph line ─────────────────────────────────────────────
+    outputBlocks.push(applyInline(trimmed));
+  }
+
+  flushList();
+  flushTable();
+
+  // Merge consecutive paragraph lines into <p> blocks
+  let html = '';
+  let paraLines = [];
+
+  function flushPara() {
+    if (paraLines.length) {
+      html += `<p class="md-p">${paraLines.join('<br>')}</p>`;
+      paraLines = [];
+    }
+  }
+
+  for (const block of outputBlocks) {
+    if (
+      block.startsWith('<h') ||
+      block.startsWith('<pre') ||
+      block.startsWith('<blockquote') ||
+      block.startsWith('<ul') ||
+      block.startsWith('<ol') ||
+      block.startsWith('<hr') ||
+      block.startsWith('<div') ||
+      block === '<p-break/>' ||
+      /^\x00CB\d+\x00$/.test(block)
+    ) {
+      flushPara();
+      if (block !== '<p-break/>') {
+        html += block;
+      }
+    } else {
+      paraLines.push(block);
+    }
+  }
+  flushPara();
+
+  // ── Restore placeholders ─────────────────────────────────────────────────
+  html = html.replace(/\x00CB(\d+)\x00/g, (_, i) => CODE_BLOCKS[+i]);
+  html = html.replace(/\x00IC(\d+)\x00/g, (_, i) => INLINE_CODE[+i]);
+  html = html.replace(/\x00ESC(\d+)\x00/g, (_, i) => escapeHtml(ESCAPES[+i]));
+
+  return html;
+}
+
+/**
+ * Apply all inline transformations to a single line/span of text.
+ * Runs AFTER block-level processing.
+ *
+ * Order: inline-code placeholders → images → links →
+ *        bold/italic → highlights → colors → bidi-wrapping
+ */
+function applyInline(text) {
+  // Inline code already tokenised — pass through
+  // ── Images ───────────────────────────────────────────────────────────────
+  text = text.replace(/!\[([^\]]*?)\]\(([^)]+?)\)/g,
+    (_, alt, src) => `<img class="md-img" src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" loading="lazy">`);
+
+  // ── Links ────────────────────────────────────────────────────────────────
+  text = text.replace(/\[([^\]]+?)\]\(([^)]+?)\)/g,
+    (_, label, href) => `<a class="md-link" href="${escapeHtml(href)}" target="_blank" rel="noopener">${label}</a>`);
+
+  // ── Bold + Italic combined ***text*** ────────────────────────────────────
+  text = text.replace(/\*{3}(.+?)\*{3}/g, '<strong><em>$1</em></strong>');
+  text = text.replace(/_{3}(.+?)_{3}/g, '<strong><em>$1</em></strong>');
+
+  // ── Bold **text** or __text__ ────────────────────────────────────────────
+  text = text.replace(/\*{2}(.+?)\*{2}/g, '<strong>$1</strong>');
+  text = text.replace(/_{2}(.+?)_{2}/g, '<strong>$1</strong>');
+
+  // ── Italic *text* or _text_ ──────────────────────────────────────────────
+  text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  text = text.replace(/_(.+?)_/g, '<em>$1</em>');
+
+  // ── Custom HIGHLIGHT syntax (must come before color to handle nesting) ───
+  // ««text»» — style 4
+  text = text.replace(/««([\s\S]+?)»»/g, '<mark class="hl-4">$1</mark>');
+  // <<text>> — style 3
+  text = text.replace(/<<([\s\S]+?)>>/g, '<mark class="hl-3">$1</mark>');
+  // [[text]] — style 2
+  text = text.replace(/\[\[([\s\S]+?)\]\]/g, '<mark class="hl-2">$1</mark>');
+  // ((text)) — style 1
+  text = text.replace(/\(\(([\s\S]+?)\)\)/g, '<mark class="hl-1">$1</mark>');
+
+  // ── Custom COLOR syntax ──────────────────────────────────────────────────
+  // «text» — color 4
+  text = text.replace(/«([\s\S]+?)»/g, '<span class="cl-4">$1</span>');
+  // <text> — color 3  (careful: don't match HTML tags — only Persian/text content)
+  // We match only if the content has no < > inside to avoid breaking HTML
+  text = text.replace(/<([^<>]+?)>/g, (match, inner) => {
+    // Skip if it looks like an HTML tag
+    if (/^\/?\w[\w\-]*(\s|\/?>|$)/.test(inner)) return match;
+    return `<span class="cl-3">${inner}</span>`;
+  });
+  // [text] — color 2  (only when not already consumed by link parser)
+  text = text.replace(/\[([^\[\]]+?)\]/g, '<span class="cl-2">$1</span>');
+  // (text) — color 1
+  // text = text.replace(/\(([^()]+?)\)/g, '<span class="cl-1">$1</span>');
+  // (¥¥text¥¥) — color 1
+  // single line
+    text = text.replace(/¥¥([^¥]+?)¥¥/g, '<span class="cl-1">$1</span>'); 
+   // multi line
+   //text = text.replace(/¥¥([\s\S]*?)¥¥/g, '<span class="cl-1">$1</span>');
+
+  return text;
+}
+
+// ─── BOOK MODEL BUILDER ───────────────────────────────────────────────────────
+
+/**
+ * Build the final BOOK JSON that will be embedded in the HTML.
+ * Each chapter gets its HTML content and a search-ready normalised text.
+ */
+function buildBookModel(structure) {
+  const book = { sections: [] };
+
+  for (const sec of structure.sections) {
+    const section = { title: sec.title, chapters: [] };
+
+    for (const ch of sec.chapters) {
+      const htmlContent = parseContent(ch.rawLines);
+      const plainText  = ch.rawLines.join(' ');
+      section.chapters.push({
+        title  : ch.title,
+        html   : htmlContent,
+        // search fields
+        search : normaliseArabic(plainText),
+        plain  : plainText.slice(0, 300), // snippet source
+      });
     }
 
-    // Global models list management inside AppSettings
-    private fun getGlobalModelsFromSettings(settings: AppSettings?): List<ModelConfig> {
-        val json = settings?.globalModelsJson ?: ""
-        if (json.isBlank()) {
-            return listOf(
-                ModelConfig("gemini-3.5-flash", "Gemini 3.5 Flash"),
-                ModelConfig("gemini-3-flash-preview", "Gemini 3 Flash"),
-                ModelConfig("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite")
-            )
-        }
-        return JsonSerializer.deserializeModels(json)
+    book.sections.push(section);
+  }
+
+  return book;
+}
+
+// ─── FONT INJECTION ───────────────────────────────────────────────────────────
+
+function buildFontCSS() {
+  if (CONFIG.FONT_MODE === 'local') {
+    try {
+      const fontData = readFileSync(resolve(CONFIG.LOCAL_FONT_PATH));
+      const b64 = fontData.toString('base64');
+      const ext = CONFIG.LOCAL_FONT_PATH.split('.').pop().toLowerCase();
+      const mimeMap = { woff2: 'font/woff2', woff: 'font/woff', ttf: 'font/truetype', otf: 'font/opentype' };
+      const mime = mimeMap[ext] || 'font/woff2';
+      
+      return `
+@font-face {
+  font-family: '${CONFIG.LOCAL_FONT_FAMILY}';
+  src: url('data:${mime};base64,${b64}') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+:root { --font-main: '${CONFIG.LOCAL_FONT_FAMILY}', Tahoma, 'Vazir', sans-serif; }`;
+    } catch (e) {
+      console.warn('⚠  Could not read local font file:', e.message);
     }
-
-    fun getGlobalModels(): List<ModelConfig> {
-        val json = appSettingsFlow.value?.globalModelsJson ?: ""
-        if (json.isBlank()) {
-            return listOf(
-                ModelConfig("gemini-3.5-flash", "Gemini 3.5 Flash"),
-                ModelConfig("gemini-3-flash-preview", "Gemini 3 flash"),
-                ModelConfig("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite")
-            )
-        }
-        return JsonSerializer.deserializeModels(json)
-    }
-
-    fun addGlobalModel(code: String, title: String) {
-        viewModelScope.launch {
-            val settings = appSettingsDao.getSettings() ?: AppSettings()
-            val currentModels = getGlobalModelsFromSettings(settings).toMutableList()
-            if (currentModels.none { it.code == code }) {
-                currentModels.add(ModelConfig(code, title))
-                val updatedJson = JsonSerializer.serializeModels(currentModels)
-                appSettingsDao.insertSettings(settings.copy(globalModelsJson = updatedJson))
-            }
-        }
-    }
-
-    fun deleteGlobalModel(code: String) {
-        viewModelScope.launch {
-            val settings = appSettingsDao.getSettings() ?: AppSettings()
-            val currentModels = getGlobalModelsFromSettings(settings).toMutableList()
-            currentModels.removeAll { it.code == code }
-            val updatedJson = JsonSerializer.serializeModels(currentModels)
-            appSettingsDao.insertSettings(settings.copy(globalModelsJson = updatedJson))
-        }
-    }
-
-    fun moveGlobalModelUp(model: ModelConfig) {
-        viewModelScope.launch {
-            val settings = appSettingsDao.getSettings() ?: AppSettings()
-            val currentModels = getGlobalModelsFromSettings(settings).toMutableList()
-            val index = currentModels.indexOfFirst { it.code == model.code }
-            if (index > 0) {
-                val temp = currentModels[index]
-                currentModels[index] = currentModels[index - 1]
-                currentModels[index - 1] = temp
-                val updatedJson = JsonSerializer.serializeModels(currentModels)
-                appSettingsDao.insertSettings(settings.copy(globalModelsJson = updatedJson))
-            }
-        }
-    }
-
-    fun moveGlobalModelDown(model: ModelConfig) {
-        viewModelScope.launch {
-            val settings = appSettingsDao.getSettings() ?: AppSettings()
-            val currentModels = getGlobalModelsFromSettings(settings).toMutableList()
-            val index = currentModels.indexOfFirst { it.code == model.code }
-            if (index != -1 && index < currentModels.size - 1) {
-                val temp = currentModels[index]
-                currentModels[index] = currentModels[index + 1]
-                currentModels[index + 1] = temp
-                val updatedJson = JsonSerializer.serializeModels(currentModels)
-                appSettingsDao.insertSettings(settings.copy(globalModelsJson = updatedJson))
-            }
-        }
-    }
-
-    fun logError(message: String, details: String) {
-        viewModelScope.launch {
-            errorLogDao.insertErrorLog(ErrorLog(errorMessage = message, details = details))
-        }
-    }
-
-    fun clearErrorLogs() {
-        viewModelScope.launch {
-            errorLogDao.clearErrorLogs()
-        }
-    }
-
-    fun selectPrompt(id: Int?) {
-        _selectedPromptId.value = id
-    }
-
-    // File Picker handling
-    fun selectFile(context: Context, uri: Uri) {
-        _selectedFileUri.value = uri
-        viewModelScope.launch {
-            try {
-                _processingState.value = ProcessingState.Loading("در حال خواندن فایل...")
-                val resolver = context.contentResolver
-                
-                var name: String? = null
-                var size: Long? = null
-                resolver.query(uri, null, null, null, null)?.use { cursor ->
-                    val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
-                    if (cursor.moveToFirst()) {
-                        if (nameIndex != -1) name = cursor.getString(nameIndex)
-                        if (sizeIndex != -1) size = cursor.getLong(sizeIndex)
-                    }
-                }
-
-                _selectedFileName.value = name ?: "document.txt"
-                _selectedFileSize.value = size
-
-                val baseName = name?.substringBeforeLast(".") ?: "document"
-                _outputFileName.value = "${baseName}_summary.txt"
-
-                val content = withContext(Dispatchers.IO) {
-                    resolver.openInputStream(uri)?.use { stream ->
-                        stream.bufferedReader().use { reader -> reader.readText() }
-                    } ?: ""
-                }
-
-                if (content.isBlank()) {
-                    _processingState.value = ProcessingState.Error("فایل متنی انتخابی خالی است!")
-                } else {
-                    fileContent = content
-                    _processingState.value = ProcessingState.Idle
-                }
-            } catch (e: Exception) {
-                _processingState.value = ProcessingState.Error("خطا در بارگذاری فایل: ${e.message}")
-            }
-        }
-    }
-
-    fun clearSelectedFile() {
-        _selectedFileUri.value = null
-        _selectedFileName.value = null
-        _selectedFileSize.value = null
-        _outputFileName.value = ""
-        fileContent = ""
-        _processingState.value = ProcessingState.Idle
-    }
-
-    fun updateOutputFileName(name: String) {
-        _outputFileName.value = name
-    }
-
-    // Loop & Session execution
-    fun startNewSession(context: Context, customPromptText: String) {
-        val settings = appSettingsFlow.value ?: AppSettings()
-        val separator = settings.customSeparator
-
-        if (fileContent.isBlank()) {
-            _processingState.value = ProcessingState.Error("لطفاً ابتدا فایل متنی صحیح انتخاب کنید.")
-            return
-        }
-
-        val sections = fileContent.split(separator).map { it.trim() }.filter { it.isNotEmpty() }
-        if (sections.isEmpty()) {
-            _processingState.value = ProcessingState.Error("هیچ بخشی با جداکننده تعریف شده یافت نشد!")
-            return
-        }
-
-        viewModelScope.launch {
-            // Cancel active job
-            processingJob?.cancel()
-            activeSessionDao.deleteActiveSession()
-
-            val origName = _selectedFileName.value ?: "document.txt"
-            val outName = _outputFileName.value.trim().ifBlank { "${origName.substringBeforeLast(".")}_summary.txt" }
-
-            val session = ActiveSession(
-                originalFileName = origName,
-                outputFileName = outName,
-                separator = separator,
-                totalSections = sections.size,
-                currentSectionIndex = 0,
-                rawSectionsJson = JsonSerializer.serializeStrings(sections),
-                accumulatedSummariesJson = JsonSerializer.serializeStrings(emptyList()),
-                isCompleted = false,
-                fileUriString = _selectedFileUri.value?.toString() ?: "",
-                customPrompt = customPromptText
-            )
-
-            activeSessionDao.insertActiveSession(session)
-            activeKeyIndex = 0
-            activeModelIndex = 0
-            currentRetryCount = 0
-
-            runProcessingLoop(context, session)
-        }
-    }
-
-    fun resumeSession(context: Context) {
-        viewModelScope.launch {
-            val session = activeSessionDao.getActiveSession()
-            if (session != null) {
-                runProcessingLoop(context, session)
-            } else {
-                _processingState.value = ProcessingState.Idle
-            }
-        }
-    }
-
-    fun abortSession() {
-        processingJob?.cancel()
-        viewModelScope.launch {
-            activeSessionDao.deleteActiveSession()
-            _processingState.value = ProcessingState.Idle
-        }
-    }
-
-    // Perform retry manually from error screen
-    fun manualRetry(context: Context) {
-        viewModelScope.launch {
-            val session = activeSessionDao.getActiveSession()
-            if (session != null) {
-                currentRetryCount = 0
-                runProcessingLoop(context, session)
-            }
-        }
-    }
-
-    // Advance dynamically either model or key
-    fun proceedToNextFallback(context: Context) {
-        viewModelScope.launch {
-            val session = activeSessionDao.getActiveSession() ?: return@launch
-            val keys = getEffectiveKeys()
-            if (keys.isEmpty()) {
-                _processingState.value = ProcessingState.Error("پیکربندی معتبر کلید API یافت نشد.")
-                return@launch
-            }
-
-            val currentKey = keys.getOrNull(activeKeyIndex)
-            val models = currentKey?.let { JsonSerializer.deserializeModels(it.modelsJson) } ?: emptyList()
-
-            if (activeModelIndex + 1 < models.size) {
-                // Next model same key
-                activeModelIndex++
-                currentRetryCount = 0
-                runProcessingLoop(context, session)
-            } else if (activeKeyIndex + 1 < keys.size) {
-                // Next key first model
-                activeKeyIndex++
-                activeModelIndex = 0
-                currentRetryCount = 0
-                runProcessingLoop(context, session)
-            } else {
-                _processingState.value = ProcessingState.Error("تمامی کلیدها و مدل‌های موجود بررسی شده و با شکست مواجه شدند.")
-            }
-        }
-    }
-
-    // Force selection manual fallback key & model
-    fun manualForceFallback(context: Context, keyIdx: Int, modelIdx: Int) {
-        viewModelScope.launch {
-            val session = activeSessionDao.getActiveSession() ?: return@launch
-            activeKeyIndex = keyIdx
-            activeModelIndex = modelIdx
-            currentRetryCount = 0
-            runProcessingLoop(context, session)
-        }
-    }
-
-    private suspend fun getEffectiveKeys(): List<ApiKeyConfig> {
-        val keys = apiKeyDao.getAllApiKeys()
-        if (keys.isNotEmpty()) return keys
-
-        // Config default fallback from build params to retain out-of-box usefulness
-        val defaultVal = BuildConfig.GEMINI_API_KEY
-        return if (defaultVal.isNotEmpty() && defaultVal != "MY_GEMINI_API_KEY") {
-            listOf(
-                ApiKeyConfig(
-                    id = -99,
-                    title = "کلید پیش‌فرض برنامه",
-                    apiKey = defaultVal,
-                    priorityOrder = 1,
-                    modelsJson = JsonSerializer.serializeModels(
-                        listOf(
-                            ModelConfig("gemini-3.5-flash", "Gemini 3.5 Flash")
-                        )
-                    )
-                )
-            )
-        } else {
-            emptyList()
-        }
-    }
-
-    private fun runProcessingLoop(context: Context, startSession: ActiveSession) {
-        processingJob?.cancel()
-        processingJob = viewModelScope.launch(Dispatchers.IO) {  // ← حلقه روی نخ IO
-            var session = startSession
-            val sections = JsonSerializer.deserializeStrings(session.rawSectionsJson)
-            val summaries = JsonSerializer.deserializeStrings(session.accumulatedSummariesJson).toMutableList()
-            val total = session.totalSections
-
-            while (session.currentSectionIndex < total) {
-                val index = session.currentSectionIndex
-                val currentTextSection = sections[index]
-
-                val keys = getEffectiveKeys()
-                if (keys.isEmpty()) {
-                    withContext(Dispatchers.Main) {
-                        _processingState.value = ProcessingState.Error(
-                            "برای خلاصه‌سازی نیاز به تنظیم حداقل یک کلید API در صفحه مربوطه است!"
-                        )
-                    }
-                    return@launch
-                }
-
-                // Ensure pointers are safe
-                if (activeKeyIndex >= keys.size) activeKeyIndex = 0
-                val rawKey = keys[activeKeyIndex]
-                val models = JsonSerializer.deserializeModels(rawKey.modelsJson)
-                if (models.isEmpty()) {
-                    withContext(Dispatchers.Main) {
-                        _processingState.value = ProcessingState.Error("کلید انتخاب شده فاقد مدل‌های خلاصه فعال است.")
-                    }
-                    return@launch
-                }
-
-                if (activeModelIndex >= models.size) activeModelIndex = 0
-                val rawModel = models[activeModelIndex]
-
-                val settings = appSettingsFlow.value ?: AppSettings()
-                val retriesAllowed = settings.retryAttemptsLimit
-                val retriesLeft = (retriesAllowed - currentRetryCount).coerceAtLeast(0)
-
-                // به‌روزرسانی وضعیت در حال اجرا
-                withContext(Dispatchers.Main) {
-                    _processingState.value = ProcessingState.Running(
-                        originalFileName = session.originalFileName,
-                        currentSection = index + 1,
-                        totalSections = total,
-                        retriesLeft = retriesLeft,
-                        activeKeyTitle = rawKey.title,
-                        activeModelTitle = rawModel.title,
-                        statusMessage = "در حال ارسال بخش ${index + 1} از $total برای خلاصه‌سازی..."
-                    )
-                }
-
-                // فراخوانی API (خودش با Dispatchers.IO انجام می‌شود)
-                val responseResult = callGeminiApi(
-                    apiKey = rawKey.apiKey,
-                    modelCode = rawModel.code,
-                    sectionText = currentTextSection,
-                    customPrompt = session.customPrompt
-                )
-
-                if (responseResult.isSuccess) {
-                    val responseSummary = responseResult.getOrThrow()
-                    summaries.add(responseSummary)
-                    currentRetryCount = 0
-
-                    val nextIndex = index + 1
-                    val isSessionDone = nextIndex >= total
-
-                    session = session.copy(
-                        currentSectionIndex = nextIndex,
-                        accumulatedSummariesJson = JsonSerializer.serializeStrings(summaries),
-                        isCompleted = isSessionDone
-                    )
-
-                    activeSessionDao.insertActiveSession(session)
-
-                    if (isSessionDone) {
-                        withContext(Dispatchers.Main) {
-                            _processingState.value = ProcessingState.Loading("در حال جمع‌آوری و ذخیره خروجی نهایی...")
-                        }
-                        val compiledResult = compileAndFormatSummaries(sections, summaries)
-                        val baseName = session.outputFileName.substringBeforeLast(".")
-                        val textFileName = "$baseName.txt"
-                        val htmlFileName = "$baseName.html"
-
-                        val textUri = saveFileToDownloads(context, textFileName, compiledResult, "text/plain")
-                        val htmlContent = generateHtmlFromSummaries(session.originalFileName, summaries)
-                        val htmlUri = saveFileToDownloads(context, htmlFileName, htmlContent, "text/html")
-
-                        val textUriStr = textUri?.toString() ?: ""
-                        val htmlUriStr = htmlUri?.toString() ?: ""
-
-                        historyLogsDao.insertHistoryLog(
-                            HistoryLog(
-                                fileName = session.originalFileName,
-                                sectionsCount = total,
-                                savedPath = textFileName,
-                                savedHtmlPath = htmlFileName,
-                                savedTextUri = textUriStr,
-                                savedHtmlUri = htmlUriStr,
-                                summaryContent = compiledResult
-                            )
-                        )
-
-                        activeSessionDao.deleteActiveSession()
-                        withContext(Dispatchers.Main) {
-                            _processingState.value = ProcessingState.Success(
-                                summary = compiledResult,
-                                savedPath = textFileName,
-                                savedHtmlPath = htmlFileName,
-                                textFileUri = textUriStr,
-                                htmlFileUri = htmlUriStr,
-                                htmlContent = htmlContent
-                            )
-                        }
-                        return@launch
-                    } else {
-                        // تأخیر پس از موفقیت
-                        withContext(Dispatchers.Main) {
-                            _processingState.value = ProcessingState.Running(
-                                originalFileName = session.originalFileName,
-                                currentSection = index + 1,
-                                totalSections = total,
-                                retriesLeft = retriesLeft,
-                                activeKeyTitle = rawKey.title,
-                                activeModelTitle = rawModel.title,
-                                statusMessage = "بخش ${index + 1} دریافت شد. ${settings.successDelaySeconds} ثانیه استراحت..."
-                            )
-                        }
-                        delay(settings.successDelaySeconds * 1000L)
-                    }
-                } else {
-                    // خطا در API
-                    val exception = responseResult.exceptionOrNull()
-                    val statusCode = (exception as? HttpException)?.code() ?: 0
-                    val errMsg = exception?.localizedMessage ?: exception?.message ?: "$statusCode"
-                    val details = "بخش ${index + 1} از $total - کلید: ${rawKey.title} - مدل: ${rawModel.code}\nاستک تریس: ${exception?.stackTraceToString() ?: "ندارد"}"
-                    logError("خطا در پردازش بخش ${index + 1}: $errMsg (کد وضعیت: $statusCode)", details)
-                    Log.e("SummarizerLoop", "API failure response: ${exception?.message}", exception)
-
-                    if (statusCode == 403) {
-                        withContext(Dispatchers.Main) {
-                            _processingState.value = ProcessingState.VpnBlockError(
-                                sectionIndex = index,
-                                errorMsg = "خطای ممنوعیت (۴۰۳) به دلیل عدم انطباق IP کشور رخ داد. لطفاً فیلترشکن خود را روشن کنید یا به کشوری معتبر تغییر داده و دکمه ادامه را بزنید."
-                            )
-                        }
-                        return@launch
-                    }
-
-                    currentRetryCount++
-                    if (currentRetryCount <= retriesAllowed) {
-                        val waitTime = if (statusCode == 503) settings.overloadDelaySeconds else settings.errorDelaySeconds
-                        withContext(Dispatchers.Main) {
-                            _processingState.value = ProcessingState.Running(
-                                originalFileName = session.originalFileName,
-                                currentSection = index + 1,
-                                totalSections = total,
-                                retriesLeft = (retriesAllowed - currentRetryCount).coerceAtLeast(0),
-                                activeKeyTitle = rawKey.title,
-                                activeModelTitle = rawModel.title,
-                                statusMessage = "ناموفق خطای ($statusCode). تلاش مجدد تا ${waitTime} ثانیه دیگر..."
-                            )
-                        }
-                        delay(waitTime * 1000L)
-                    } else {
-                        // حداکثر تلاش‌ها تمام شده
-                        if (settings.autoSwitchOnLimit) {
-                            if (activeModelIndex + 1 < models.size) {
-                                activeModelIndex++
-                                currentRetryCount = 0
-                            } else if (activeKeyIndex + 1 < keys.size) {
-                                activeKeyIndex++
-                                activeModelIndex = 0
-                                currentRetryCount = 0
-                            } else {
-                                withContext(Dispatchers.Main) {
-                                    _processingState.value = ProcessingState.Error(
-                                        "خطا در خلاصه‌سازی بخش ${index + 1}. تمامی کلیدها و مدل‌های تعریف شده با خطا مواجه شدند: ${exception?.localizedMessage ?: exception?.message}"
-                                    )
-                                }
-                                return@launch
-                            }
-                            delay(settings.errorDelaySeconds * 1000L)
-                        } else {
-                            // درخواست تصمیم از کاربر
-                            withContext(Dispatchers.Main) {
-                                _processingState.value = ProcessingState.WaitingForUserDecision(
-                                    sectionIndex = index,
-                                    errorMsg = exception?.localizedMessage ?: exception?.message ?: "خطای ناشناخته",
-                                    keyIndex = activeKeyIndex,
-                                    modelIndex = activeModelIndex
-                                )
-                            }
-                            return@launch
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private suspend fun callGeminiApi(
-        apiKey: String,
-        modelCode: String,
-        sectionText: String,
-        customPrompt: String
-    ): Result<String> = withContext(Dispatchers.IO) {
-        val prompt = buildString {
-            append(customPrompt)
-            append("\n\n--- متن بخش از سند ---\n")
-            append(sectionText)
-            append("\n--- انتهای متن بخش ---")
-        }
-
-        try {
-            val request = GenerateContentRequest(
-                contents = listOf(Content(parts = listOf(Part(text = prompt))))
-            )
-            val response = RetrofitClient.service.generateContent(
-                model = modelCode,
-                apiKey = apiKey,
-                request = request
-            )
-            val text = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
-            if (text != null) {
-                Result.success(text)
-            } else {
-                Result.failure(Exception("بدنه خروجی ارسال شده در API فاقد متن است."))
-            }
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
-    private fun compileAndFormatSummaries(originalSections: List<String>, summaries: List<String>): String {
-        val settings = appSettingsFlow.value ?: AppSettings()
-        val template = settings.compiledSeparatorTemplate
-        return summaries.mapIndexed { idx, summary ->
-            template
-                .replace("{index}", (idx + 1).toString())
-                .replace("{total}", summaries.size.toString())
-                .replace("{summary}", summary)
-        }.joinToString("\n\n")
-    }
-
-    private fun saveFileToDownloads(context: Context, fileName: String, content: String, mimeType: String): Uri? {
-        val resolver = context.contentResolver
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val contentValues = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
-                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-            }
-            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
-            if (uri != null) {
-                resolver.openOutputStream(uri)?.use { outputStream ->
-                    outputStream.write(content.toByteArray())
-                    outputStream.flush()
-                }
-                return uri
-            }
-        } else {
-            @Suppress("DEPRECATION")
-            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            if (!downloadsDir.exists()) {
-                downloadsDir.mkdirs()
-            }
-            val file = File(downloadsDir, fileName)
-            FileOutputStream(file).use { out ->
-                out.write(content.toByteArray())
-                out.flush()
-            }
-            return Uri.fromFile(file)
-        }
-        return null
-    }
-
-    class ChapParsed(val title: String, val rawLines: MutableList<String> = mutableListOf())
-    class SecParsed(val title: String, val chapters: MutableList<ChapParsed> = mutableListOf())
-
-    private fun parseStructure(rawText: String): List<SecParsed> {
-        val lines = rawText.split(Regex("\\r?\\n"))
-        val sectionSep = Regex("^={10,}\\s*$")
-        val chapterPat = Regex("^🚩\\s*\\[(.+?)\\]\\s*🚩\\s*$")
-        val chapterPat2 = Regex("^🚩\\s*(.+?)\\s*🚩\\s*$")
-
-        val sections = mutableListOf<SecParsed>()
-        var currentSection: SecParsed? = null
-        var currentChapter: ChapParsed? = null
-        var pendingTitle: String? = null
-        var inSep = false
-
-        fun flushChapter() {
-            if (currentChapter != null && currentSection != null) {
-                currentSection!!.chapters.add(currentChapter!!)
-                currentChapter = null
-            }
-        }
-
-        fun flushSection() {
-            if (currentSection != null) {
-                flushChapter()
-                if (currentSection!!.chapters.isEmpty()) {
-                    currentSection!!.chapters.add(ChapParsed(title = currentSection!!.title, rawLines = mutableListOf()))
-                }
-                sections.add(currentSection!!)
-                currentSection = null
-            }
-        }
-
-        for (line in lines) {
-            val trimmed = line.trim()
-            if (sectionSep.matches(trimmed)) {
-                if (!inSep) {
-                    inSep = true
-                    pendingTitle = null
-                } else {
-                    inSep = false
-                    if (pendingTitle != null) {
-                        flushSection()
-                        currentSection = SecParsed(title = pendingTitle!!.trim())
-                        currentChapter = null
-                        pendingTitle = null
-                    }
-                }
-                continue
-            }
-
-            if (inSep) {
-                pendingTitle = if (pendingTitle == null) line else pendingTitle + "\n" + line
-                continue
-            }
-
-            var chapterTitle: String? = null
-            val m1 = chapterPat.find(trimmed)
-            val m2 = if (m1 == null) chapterPat2.find(trimmed) else null
-
-            if (m1 != null) {
-                chapterTitle = m1.groupValues[1].trim()
-            } else if (m2 != null) {
-                chapterTitle = m2.groupValues[1].trim()
-            }
-
-            if (chapterTitle != null) {
-                if (currentSection == null) {
-                    currentSection = SecParsed(title = "بخش جدید")
-                }
-                flushChapter()
-                currentChapter = ChapParsed(title = chapterTitle)
-                continue
-            }
-
-            if (currentChapter != null) {
-                currentChapter!!.rawLines.add(line)
-            } else if (currentSection != null) {
-                if (currentSection!!.chapters.isEmpty()) {
-                    currentSection!!.chapters.add(ChapParsed(title = currentSection!!.title))
-                }
-                currentSection!!.chapters.last().rawLines.add(line)
-            } else {
-                currentSection = SecParsed(title = "خلاصه سند")
-                currentChapter = ChapParsed(title = "شروع بخش")
-                currentChapter!!.rawLines.add(line)
-            }
-        }
-
-        flushSection()
-        return sections
-    }
-
-    private fun parseContent(rawLines: List<String>): String {
-        val outputBlocks = mutableListOf<String>()
-        val listBuffer = mutableListOf<String>()
-        var listOrdered = false
-
-        fun flushList() {
-            if (listBuffer.isEmpty()) return
-            val tag = if (listOrdered) "ol" else "ul"
-            val html = StringBuilder("<$tag class=\"md-list\">")
-            for (item in listBuffer) {
-                html.append("<li>").append(item).append("</li>")
-            }
-            html.append("</$tag>")
-            outputBlocks.add(html.toString())
-            listBuffer.clear()
-        }
-
-        for (line in rawLines) {
-            val trimmed = line.trim()
-            if (trimmed.isEmpty()) {
-                flushList()
-                outputBlocks.add("<p-break/>")
-                continue
-            }
-
-            val olMatch = Regex("^(\\s*)(\\d+)\\.\\s+(.+)$").find(line)
-            if (olMatch != null) {
-                if (listBuffer.isNotEmpty() && !listOrdered) flushList()
-                listOrdered = true
-                listBuffer.add(applyInline(olMatch.groupValues[3]))
-                continue
-            }
-
-            val ulMatch = Regex("^(\\s*)[-*+]\\s+(.+)$").find(line)
-            if (ulMatch != null) {
-                if (listBuffer.isNotEmpty() && listOrdered) flushList()
-                listOrdered = false
-                listBuffer.add(applyInline(ulMatch.groupValues[2]))
-                continue
-            }
-
-            if (trimmed.startsWith(">")) {
-                flushList()
-                val inner = applyInline(trimmed.substring(1).trim())
-                outputBlocks.add("<blockquote class=\"md-blockquote\">$inner</blockquote>")
-                continue
-            }
-
-            val hMatch = Regex("^(#{1,6})\\s+(.+)$").find(trimmed)
-            if (hMatch != null) {
-                flushList()
-                val level = hMatch.groupValues[1].length
-                val inner = applyInline(hMatch.groupValues[2])
-                outputBlocks.add("<h$level class=\"md-h$level\">$inner</h$level>")
-                continue
-            }
-
-            if (listBuffer.isNotEmpty()) {
-                flushList()
-            }
-            outputBlocks.add(applyInline(trimmed))
-        }
-        flushList()
-
-        val html = StringBuilder()
-        val paraLines = mutableListOf<String>()
-
-        fun flushPara() {
-            if (paraLines.isNotEmpty()) {
-                html.append("<p class=\"md-p\">").append(paraLines.joinToString("<br>")).append("</p>")
-                paraLines.clear()
-            }
-        }
-
-        for (block in outputBlocks) {
-            if (block.startsWith("<h") || block.startsWith("<blockquote") || block.startsWith("<ul") || block.startsWith("<ol") || block == "<p-break/>") {
-                flushPara()
-                if (block != "<p-break/>") {
-                    html.append(block)
-                }
-            } else {
-                paraLines.add(block)
-            }
-        }
-        flushPara()
-
-        return html.toString()
-    }
-
-    private fun applyInline(text: String): String {
-        var res = text
-
-        // ── Images ───────────────────────────────────────────────────────────────
-        res = res.replace(Regex("!\\[(.*?)\\]\\((.*?)\\)")) { match ->
-            val alt = match.groupValues[1]
-            val src = match.groupValues[2]
-            "<img class=\"md-img\" src=\"${escapeHtml(src)}\" alt=\"${escapeHtml(alt)}\" loading=\"lazy\">"
-        }
-
-        // ── Links ────────────────────────────────────────────────────────────────
-        res = res.replace(Regex("\\[([^\\]]+?)\\]\\(([^)]+?)\\)")) { match ->
-            val label = match.groupValues[1]
-            val href = match.groupValues[2]
-            "<a class=\"md-link\" href=\"${escapeHtml(href)}\" target=\"_blank\" rel=\"noopener\">$label</a>"
-        }
-
-        // ── Bold + Italic combined ***text*** ────────────────────────────────────
-        res = res.replace(Regex("\\*{3}(.+?)\\*{3}"), "<strong><em>$1</em></strong>")
-        res = res.replace(Regex("_{3}(.+?)_{3}"), "<strong><em>$1</em></strong>")
-
-        // ── Bold **text** or __text__ ────────────────────────────────────────────
-        res = res.replace(Regex("\\*{2}(.+?)\\*{2}"), "<strong>$1</strong>")
-        res = res.replace(Regex("_{2}(.+?)_{2}"), "<strong>$1</strong>")
-
-        // ── Italic *text* or _text_ ──────────────────────────────────────────────
-        res = res.replace(Regex("\\*(.+?)\\*"), "<em>$1</em>")
-        res = res.replace(Regex("_(.+?)_"), "<em>$1</em>")
-
-        // ── Custom HIGHLIGHT syntax (must come before color to handle nesting) ───
-        // ««text»» — style 4
-        res = res.replace(Regex("««([\\s\\S]+?)»»"), "<mark class=\"hl-4\">$1</mark>")
-        // <<text>> — style 3
-        res = res.replace(Regex("<<([\\s\\S]+?)>>"), "<mark class=\"hl-3\">$1</mark>")
-        // [[text]] — style 2
-        res = res.replace(Regex("\\[\\[([\\s\\S]+?)]]"), "<mark class=\"hl-2\">$1</mark>")
-        // ((text)) — style 1
-        res = res.replace(Regex("\\(\\(([\\s\\S]+?)\\)\\)"), "<mark class=\"hl-1\">$1</mark>")
-
-        // ── Custom COLOR syntax ──────────────────────────────────────────────────
-        // «text» — color 4
-        res = res.replace(Regex("«([\\s\\S]+?)»"), "<span class=\"cl-4\">$1</span>")
-        // <text> — color 3 (careful: don't match HTML tags)
-        res = res.replace(Regex("<([^<>]+?)>")) { match ->
-            val inner = match.groupValues[1]
-            if (Regex("^/?\\w[\\w\\-]*(\\s|/?>|$)").matches(inner)) {
-                match.value  // تگ HTML است، دست نزن
-            } else {
-                "<span class=\"cl-3\">$inner</span>"
-            }
-        }
-        // [text] — color 2 (only when not already consumed by link parser)
-        res = res.replace(Regex("\\[([^\\[\\]]+?)]"), "<span class=\"cl-2\">$1</span>")
-        // ¥¥text¥¥ — color 1
-        res = res.replace(Regex("¥¥([^¥]+?)¥¥"), "<span class=\"cl-1\">$1</span>")
-
-        return res
-    }
-
-    private fun escapeHtml(text: String): String {
-        return text
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\"", "&quot;")
-            .replace("'", "&#039;")
-    }
-
-    private fun normaliseArabic(str: String): String {
-        return str
-            .replace("ي", "ی")
-            .replace("ك", "ک")
-            .replace("ـ", "")
-            .replace(Regex("[\\u064B-\\u065F\\u0670]"), "")
-            .replace(Regex("[\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u206F\\uFEFF]"), "")
-            .lowercase()
-            .trim()
-    }
-
-    private fun bookToJson(sections: List<SecParsed>): String {
-        val sb = java.lang.StringBuilder()
-        sb.append("{\"sections\":[")
-        for (i in sections.indices) {
-            val sec = sections[i]
-            sb.append("{")
-            sb.append("\"title\":").append(kotlinJsonEscape(sec.title)).append(",")
-            sb.append("\"chapters\":[")
-            for (j in sec.chapters.indices) {
-                val ch = sec.chapters[j]
-                val htmlContent = parseContent(ch.rawLines)
-                val plainText = ch.rawLines.joinToString(" ")
-                
-                sb.append("{")
-                sb.append("\"title\":").append(kotlinJsonEscape(ch.title)).append(",")
-                sb.append("\"html\":").append(kotlinJsonEscape(htmlContent)).append(",")
-                sb.append("\"search\":").append(kotlinJsonEscape(normaliseArabic(plainText))).append(",")
-                sb.append("\"plain\":").append(kotlinJsonEscape(if (plainText.length > 300) plainText.substring(0, 300) else plainText))
-                sb.append("}")
-                if (j < sec.chapters.size - 1) sb.append(",")
-            }
-            sb.append("]")
-            sb.append("}")
-            if (i < sections.size - 1) sb.append(",")
-        }
-        sb.append("]}")
-        return sb.toString()
-    }
-
-    private fun kotlinJsonEscape(str: String): String {
-        val out = java.lang.StringBuilder()
-        out.append("\"")
-        for (element in str) {
-            when (element) {
-                '\\' -> out.append("\\\\")
-                '\"' -> out.append("\\\"")
-                '\n' -> out.append("\\n")
-                '\r' -> out.append("\\r")
-                '\t' -> out.append("\\t")
-                else -> {
-                    if (element.code < 32) {
-                        out.append(String.format("\\u%04x", element.code))
-                    } else {
-                        out.append(element)
-                    }
-                }
-            }
-        }
-        out.append("\"")
-        return out.toString()
-    }
-
-    fun generateHtmlFromSummaries(fileName: String, summaries: List<String>): String {
-        val rawText = summaries.joinToString("\n🚩 [بخش خلاصه] 🚩\n")
-        val parsed = parseStructure(rawText)
-        val bookJson = bookToJson(parsed)
-        val randSuffix = java.util.UUID.randomUUID().toString().take(6)
-        val lsPrefix = "\"perBook_$randSuffix\""
-
-        return """<!DOCTYPE html>
+  }
+
+  if (CONFIG.FONT_MODE === 'file') {
+    return `
+@font-face {
+  font-family: '${CONFIG.LOCAL_FONT_FAMILY}';
+  src: url('${CONFIG.LOCAL_FONT_FILE}') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+:root { --font-main: '${CONFIG.LOCAL_FONT_FAMILY}', Tahoma, 'Vazir', sans-serif; }`;
+  }
+
+  // system
+  return `:root { --font-main: 'Vazir', 'Tahoma', 'Arial Unicode MS', sans-serif; }`;
+}
+
+// ─── HTML ASSEMBLER ───────────────────────────────────────────────────────────
+
+function buildHTML(book) {
+  const bookJSON = JSON.stringify(book);
+  const fontCSS  = buildFontCSS();
+  const numar = Math.random().toString(36).slice(2) 
+      const prefiz = `"perBook_${numar}"`
+      console.log(numar)
+  
+  
+
+  return `<!DOCTYPE html>
 <html lang="fa" dir="rtl">
 <head>
 <meta charset="UTF-8">
@@ -1187,7 +582,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 /* ═══════════════════════════════════════════════════════════════
    FONT
 ═══════════════════════════════════════════════════════════════ */
-:root { --font-main: 'Vazir', 'Tahoma', 'Arial Unicode MS', sans-serif; }
+${fontCSS}
 
 /* ═══════════════════════════════════════════════════════════════
    THEMES
@@ -1989,7 +1384,7 @@ body.focus-mode #bottombar:hover { opacity: 1; pointer-events: all; }
 // ════════════════════════════════════════════════════════════════
 //  BOOK DATA — embedded at build time
 // ════════════════════════════════════════════════════════════════
-const BOOK = $bookJson;
+const BOOK = ${bookJSON};
 
 // ════════════════════════════════════════════════════════════════
 //  BUILD FLAT INDEX
@@ -2028,7 +1423,7 @@ let searchTerm = '';
 // Virtualised render: which chapter blocks are mounted
 const mounted = new Set(); // key = "si-ci"
 
-const LS_PREFIX = $lsPrefix;
+const LS_PREFIX = ${prefiz}
 
 function lsGet(k, def = null) {
   try { const v = localStorage.getItem(LS_PREFIX + k); return v !== null ? JSON.parse(v) : def; } catch { return def; }
@@ -2059,7 +1454,7 @@ function buildNavTree() {
     // Section row
     const secBtn = document.createElement('button');
     secBtn.className = 'nav-section-btn';
-    secBtn.innerHTML = `<span>${'$'}{esc(sec.title)}</span><span class="nav-section-arrow">▾</span>`;
+    secBtn.innerHTML = \`<span>\${esc(sec.title)}</span><span class="nav-section-arrow">▾</span>\`;
     secBtn.dataset.si = si;
 
     const chDiv = document.createElement('div');
@@ -2140,9 +1535,9 @@ function mountChapter(si, ci) {
   div.className = 'chapter-block';
   div.id = 'chapter-' + key;
   div.innerHTML =
-    `<span class="section-label">${'$'}{esc(sec.title)}</span>` +
-    `<div class="chapter-title">${'$'}{esc(ch.title)}</div>` +
-    `<div class="chapter-content">${'$'}{ch.html}</div>`;
+    \`<span class="section-label">\${esc(sec.title)}</span>\` +
+    \`<div class="chapter-title">\${esc(ch.title)}</div>\` +
+    \`<div class="chapter-content">\${ch.html}</div>\`;
 
   ph.after(div);
   mounted.add(key);
@@ -2354,11 +1749,11 @@ function renderSearchDropdown(results, q) {
   shown.forEach(r => {
     const item = document.createElement('div');
     item.className = 'search-result-item';
-    item.innerHTML = `
-      <div class="sri-section">${'$'}{esc(r.secTitle)}</div>
-      <div class="sri-chapter">${'$'}{esc(r.chapTitle)}</div>
-      <div class="sri-snippet">${'$'}{highlightSnippet(r.snip, q)}</div>
-    `;
+    item.innerHTML = \`
+      <div class="sri-section">\${esc(r.secTitle)}</div>
+      <div class="sri-chapter">\${esc(r.chapTitle)}</div>
+      <div class="sri-snippet">\${highlightSnippet(r.snip, q)}</div>
+    \`;
     item.addEventListener('click', () => {
       jumpTo(r.si, r.ci);
       setTimeout(() => highlightSearchInView(q), 400);
@@ -2370,7 +1765,7 @@ function renderSearchDropdown(results, q) {
   if (results.length > MAX) {
     const more = document.createElement('div');
     more.className = 'search-view-all';
-    more.textContent = `مشاهده همه ${'$'}{toPersianNum(results.length)} نتیجه`;
+    more.textContent = \`مشاهده همه \${toPersianNum(results.length)} نتیجه\`;
     more.addEventListener('click', () => showAllResults(results, q));
     dropdown.appendChild(more);
   }
@@ -2381,19 +1776,19 @@ function renderSearchDropdown(results, q) {
 function highlightSnippet(text, q) {
   const safe = esc(text);
   const safeQ = esc(q).replace(/[.*+?^$()|\\[\\]\\\\]/g, '\\\\$&');
-  return safe.replace(new RegExp(safeQ, 'gi'), m => `<mark>${'$'}{m}</mark>`);
+  return safe.replace(new RegExp(safeQ, 'gi'), m => \`<mark>\${m}</mark>\`);
 }
 
 function showAllResults(results, q) {
   document.getElementById('search-dropdown').classList.remove('visible');
   const win = document.createElement('div');
   win.style.cssText = 'position:fixed;inset:0;background:var(--surface);z-index:900;overflow-y:auto;padding:70px 16px 20px;direction:rtl;';
-  win.innerHTML = `
+  win.innerHTML = \`
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
       <button onclick="this.closest('[style]').remove()" style="background:var(--surface2);border:1px solid var(--border);padding:6px 14px;border-radius:8px;cursor:pointer;font-family:var(--font-main);color:var(--text);">بازگشت</button>
-      <span style="font-size:14px;color:var(--text-muted)">${'$'}{toPersianNum(results.length)} نتیجه برای «${'$'}{esc(q)}»</span>
+      <span style="font-size:14px;color:var(--text-muted)">\${toPersianNum(results.length)} نتیجه برای «\${esc(q)}»</span>
     </div>
-  `;
+  \`;
   // Virtualised list for large results
   const list = document.createElement('div');
   const CHUNK = 50;
@@ -2406,11 +1801,11 @@ function showAllResults(results, q) {
       const div = document.createElement('div');
       div.className = 'search-result-item';
       div.style.cssText = 'border:1px solid var(--border);border-radius:8px;margin-bottom:8px;';
-      div.innerHTML = `
-        <div class="sri-section">${'$'}{esc(r.secTitle)}</div>
-        <div class="sri-chapter">${'$'}{esc(r.chapTitle)}</div>
-        <div class="sri-snippet">${'$'}{highlightSnippet(r.snip, q)}</div>
-      `;
+      div.innerHTML = \`
+        <div class="sri-section">\${esc(r.secTitle)}</div>
+        <div class="sri-chapter">\${esc(r.chapTitle)}</div>
+        <div class="sri-snippet">\${highlightSnippet(r.snip, q)}</div>
+      \`;
       div.addEventListener('click', () => {
         win.remove();
         jumpTo(r.si, r.ci);
@@ -2459,7 +1854,7 @@ function highlightTextInEl(el, q, normQ) {
     if (!normalise(txt).includes(normQ)) continue;
     // Simple highlight
     const re = new RegExp(q.replace(/[.*+?^$()|[\\]\\\\]/g, '\\\\$&'), 'gi');
-    const html = txt.replace(re, m => `<mark class="search-mark">${'$'}{m}</mark>`);
+    const html = txt.replace(re, m => \`<mark class="search-mark">\${m}</mark>\`);
     const wrap = document.createElement('span');
     wrap.innerHTML = html;
     node.replaceWith(wrap);
@@ -2748,13 +2143,47 @@ function esc(str) {
 })();
 </script>
 </body>
-</html>
-""".trimIndent()
-    }
-
-    fun clearHistory() {
-        viewModelScope.launch {
-            historyLogsDao.clearHistory()
-        }
-    }
+</html>`;
 }
+
+// ─── MAIN ─────────────────────────────────────────────────────────────────────
+
+(async function main() {
+  const inputPath  = resolve(CONFIG.INPUT_PATH);
+  const outputPath = resolve(CONFIG.OUTPUT_PATH);
+
+  console.log('📖 Reading:', inputPath);
+  let rawText;
+  try {
+    rawText = readFileSync(inputPath, 'utf8');
+  } catch (e) {
+    console.error('❌ Cannot read input file:', e.message);
+    process.exit(1);
+  }
+
+  console.log(`   Size: ${(rawText.length / 1024).toFixed(1)} KB`);
+  console.log('🔍 Parsing structure…');
+
+  const structure = parseStructure(rawText);
+  const totalSec  = structure.sections.length;
+  const totalCh   = structure.sections.reduce((a, s) => a + s.chapters.length, 0);
+  console.log(`   Sections: ${totalSec} | Chapters: ${totalCh}`);
+
+  console.log('📝 Building book model…');
+  const book = buildBookModel(structure);
+
+  console.log('🎨 Assembling HTML…');
+  const html = buildHTML(book);
+
+  console.log('💾 Writing:', outputPath);
+  try {
+    writeFileSync(outputPath, html, 'utf8');
+  } catch (e) {
+    console.error('❌ Cannot write output file:', e.message);
+    process.exit(1);
+  }
+
+  const sizeKB = (Buffer.byteLength(html, 'utf8') / 1024).toFixed(1);
+  console.log(`✅ Done! Output size: ${sizeKB} KB`);
+  console.log(`   Sections: ${totalSec} | Chapters: ${totalCh}`);
+})();
