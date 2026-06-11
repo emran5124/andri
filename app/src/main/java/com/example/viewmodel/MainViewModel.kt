@@ -1316,7 +1316,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun generateHtmlFromSummaries(fileName: String, summaries: List<String>): String {
         val rawText = summaries.joinToString("\n🚩 [بخش خلاصه] 🚩\n")
         val parsed = parseStructure(rawText)
-        val bookJson = bookToJson(parsed)
+
+        // دقیقاً مثل JS: اول book رو می‌سازیم
+        val book = buildBookModel(parsed)
+        
+        // بعد مثل JSON.stringify تبدیل می‌کنیم به رشته
+        val bookJson = JsonObject(book).toString()  // یا هر serializer دیگه‌ای که دارید
+        
         val randSuffix = java.util.UUID.randomUUID().toString().take(6)
         val lsPrefix = "\"perBook_$randSuffix\""
 
