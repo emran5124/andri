@@ -1009,12 +1009,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val listBuffer = mutableListOf<Pair<Int, String>>() // { depth, content }
         var listOrdered = false
 
-        fun flushList() {
-            if (listBuffer.isEmpty()) return
-            outputBlocks.add(renderList(listBuffer, listOrdered))
-            listBuffer.clear()
-        }
-
         fun renderList(items: List<Pair<Int, String>>, ordered: Boolean): String {
             val tag = if (ordered) "ol" else "ul"
             val html = StringBuilder("<$tag class=\"md-list\">")
@@ -1023,6 +1017,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             html.append("</$tag>")
             return html.toString()
+        }
+        fun flushList() {
+            if (listBuffer.isEmpty()) return
+            outputBlocks.add(renderList(listBuffer, listOrdered))
+            listBuffer.clear()
         }
 
         // Block table accumulator
