@@ -2014,7 +2014,7 @@ function buildNavTree() {
     // Section row
     const secBtn = document.createElement('button');
     secBtn.className = 'nav-section-btn';
-    secBtn.innerHTML = \`<span>${'$'}{esc(sec.title)}</span><span class="nav-section-arrow">▾</span>\`;
+    secBtn.innerHTML = `<span>${'$'}{esc(sec.title)}</span><span class="nav-section-arrow">▾</span>`;
     secBtn.dataset.si = si;
 
     const chDiv = document.createElement('div');
@@ -2095,9 +2095,9 @@ function mountChapter(si, ci) {
   div.className = 'chapter-block';
   div.id = 'chapter-' + key;
   div.innerHTML =
-    \`<span class="section-label">${'$'}{esc(sec.title)}</span>\` +
-    \`<div class="chapter-title">${'$'}{esc(ch.title)}</div>\` +
-    \`<div class="chapter-content">${'$'}{ch.html}</div>\`;
+    `<span class="section-label">${'$'}{esc(sec.title)}</span>` +
+    `<div class="chapter-title">${'$'}{esc(ch.title)}</div>` +
+    `<div class="chapter-content">${'$'}{ch.html}</div>`;
 
   ph.after(div);
   mounted.add(key);
@@ -2309,11 +2309,11 @@ function renderSearchDropdown(results, q) {
   shown.forEach(r => {
     const item = document.createElement('div');
     item.className = 'search-result-item';
-    item.innerHTML = \`
+    item.innerHTML = `
       <div class="sri-section">${'$'}{esc(r.secTitle)}</div>
       <div class="sri-chapter">${'$'}{esc(r.chapTitle)}</div>
       <div class="sri-snippet">${'$'}{highlightSnippet(r.snip, q)}</div>
-    \`;
+    `;
     item.addEventListener('click', () => {
       jumpTo(r.si, r.ci);
       setTimeout(() => highlightSearchInView(q), 400);
@@ -2325,7 +2325,7 @@ function renderSearchDropdown(results, q) {
   if (results.length > MAX) {
     const more = document.createElement('div');
     more.className = 'search-view-all';
-    more.textContent = \`مشاهده همه ${'$'}{toPersianNum(results.length)} نتیجه\`;
+    more.textContent = `مشاهده همه ${'$'}{toPersianNum(results.length)} نتیجه`;
     more.addEventListener('click', () => showAllResults(results, q));
     dropdown.appendChild(more);
   }
@@ -2336,19 +2336,19 @@ function renderSearchDropdown(results, q) {
 function highlightSnippet(text, q) {
   const safe = esc(text);
   const safeQ = esc(q).replace(/[.*+?^$()|\\[\\]\\\\]/g, '\\\\$&');
-  return safe.replace(new RegExp(safeQ, 'gi'), m => \`<mark>${'$'}{m}</mark>\`);
+  return safe.replace(new RegExp(safeQ, 'gi'), m => `<mark>${'$'}{m}</mark>`);
 }
 
 function showAllResults(results, q) {
   document.getElementById('search-dropdown').classList.remove('visible');
   const win = document.createElement('div');
   win.style.cssText = 'position:fixed;inset:0;background:var(--surface);z-index:900;overflow-y:auto;padding:70px 16px 20px;direction:rtl;';
-  win.innerHTML = \`
+  win.innerHTML = `
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
       <button onclick="this.closest('[style]').remove()" style="background:var(--surface2);border:1px solid var(--border);padding:6px 14px;border-radius:8px;cursor:pointer;font-family:var(--font-main);color:var(--text);">بازگشت</button>
       <span style="font-size:14px;color:var(--text-muted)">${'$'}{toPersianNum(results.length)} نتیجه برای «${'$'}{esc(q)}»</span>
     </div>
-  \`;
+  `;
   // Virtualised list for large results
   const list = document.createElement('div');
   const CHUNK = 50;
@@ -2361,11 +2361,11 @@ function showAllResults(results, q) {
       const div = document.createElement('div');
       div.className = 'search-result-item';
       div.style.cssText = 'border:1px solid var(--border);border-radius:8px;margin-bottom:8px;';
-      div.innerHTML = \`
+      div.innerHTML = `
         <div class="sri-section">${'$'}{esc(r.secTitle)}</div>
         <div class="sri-chapter">${'$'}{esc(r.chapTitle)}</div>
         <div class="sri-snippet">${'$'}{highlightSnippet(r.snip, q)}</div>
-      \`;
+      `;
       div.addEventListener('click', () => {
         win.remove();
         jumpTo(r.si, r.ci);
@@ -2414,7 +2414,7 @@ function highlightTextInEl(el, q, normQ) {
     if (!normalise(txt).includes(normQ)) continue;
     // Simple highlight
     const re = new RegExp(q.replace(/[.*+?^$()|[\\]\\\\]/g, '\\\\$&'), 'gi');
-    const html = txt.replace(re, m => \`<mark class="search-mark">${'$'}{m}</mark>\`);
+    const html = txt.replace(re, m => `<mark class="search-mark">${'$'}{m}</mark>`);
     const wrap = document.createElement('span');
     wrap.innerHTML = html;
     node.replaceWith(wrap);
