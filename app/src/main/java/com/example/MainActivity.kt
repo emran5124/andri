@@ -455,7 +455,7 @@ fun ProcessingTab(viewModel: MainViewModel) {
                         OutlinedTextField(
                             value = customPromptOverride,
                             onValueChange = { customPromptOverride = it },
-                            label = { Text("متن پرامپت (قابل ویرایش مستقیم)") },
+                            label = { Text("پرامپت") },
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
                             maxLines = 4
@@ -2107,7 +2107,7 @@ fun SettingsTab(viewModel: MainViewModel) {
                     val sDelay = successDelay.toIntOrNull() ?: 10
                     val eDelay = errorDelay.toIntOrNull() ?: 10
                     val oDelay = overloadDelay.toIntOrNull() ?: 30
-                    val limit = retriesLimit.toIntOrNull() ?: 3
+                    val limit = retriesLimit.toIntOrNull() ?: 5
 
                     viewModel.updateSettings(
                         AppSettings(
