@@ -579,7 +579,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun runProcessingLoop(context: Context, startSession: ActiveSession) {
         processingJob?.cancel()
-        processingJob = viewModelScope.launch {
+        processingJob = viewModelScope.launch(Dispatchers.IO) {  // ← حلقه روی نخ IO
             var session = startSession
             val sections = JsonSerializer.deserializeStrings(session.rawSectionsJson)
             val summaries = JsonSerializer.deserializeStrings(session.accumulatedSummariesJson).toMutableList()
@@ -591,41 +591,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 val keys = getEffectiveKeys()
                 if (keys.isEmpty()) {
-                    _processingState.value = ProcessingState.Error("برای خلاصه‌سازی نیاز به تنظیم حداقل یک کلید API در صفحه مربوطه است!")
+                    withContext(Dispatchers.Main) {
+                        _processingState.value = ProcessingState.Error(
+                            "برای خلاصه‌سازی نیاز به تنظیم حداقل یک کلید API در صفحه مربوطه است!"
+                        )
+                    }
                     return@launch
                 }
 
                 // Ensure pointers are safe
-                if (activeKeyIndex >= keys.size) {
-                    activeKeyIndex = 0
-                }
+                if (activeKeyIndex >= keys.size) activeKeyIndex = 0
                 val rawKey = keys[activeKeyIndex]
                 val models = JsonSerializer.deserializeModels(rawKey.modelsJson)
                 if (models.isEmpty()) {
-                    _processingState.value = ProcessingState.Error("کلید انتخاب شده فاقد مدل‌های خلاصه فعال است.")
+                    withContext(Dispatchers.Main) {
+                        _processingState.value = ProcessingState.Error("کلید انتخاب شده فاقد مدل‌های خلاصه فعال است.")
+                    }
                     return@launch
                 }
-                
-                if (activeModelIndex >= models.size) {
-                    activeModelIndex = 0
-                }
+
+                if (activeModelIndex >= models.size) activeModelIndex = 0
                 val rawModel = models[activeModelIndex]
 
                 val settings = appSettingsFlow.value ?: AppSettings()
                 val retriesAllowed = settings.retryAttemptsLimit
                 val retriesLeft = (retriesAllowed - currentRetryCount).coerceAtLeast(0)
 
-                _processingState.value = ProcessingState.Running(
-                    originalFileName = session.originalFileName,
-                    currentSection = index + 1,
-                    totalSections = total,
-                    retriesLeft = retriesLeft,
-                    activeKeyTitle = rawKey.title,
-                    activeModelTitle = rawModel.title,
-                    statusMessage = "در حال ارسال بخش ${index + 1} از $total برای خلاصه‌سازی..."
-                )
+                // به‌روزرسانی وضعیت در حال اجرا
+                withContext(Dispatchers.Main) {
+                    _processingState.value = ProcessingState.Running(
+                        originalFileName = session.originalFileName,
+                        currentSection = index + 1,
+                        totalSections = total,
+                        retriesLeft = retriesLeft,
+                        activeKeyTitle = rawKey.title,
+                        activeModelTitle = rawModel.title,
+                        statusMessage = "در حال ارسال بخش ${index + 1} از $total برای خلاصه‌سازی..."
+                    )
+                }
 
-                // Call the API
+                // فراخوانی API (خودش با Dispatchers.IO انجام می‌شود)
                 val responseResult = callGeminiApi(
                     apiKey = rawKey.apiKey,
                     modelCode = rawModel.code,
@@ -634,7 +639,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
 
                 if (responseResult.isSuccess) {
-                    // Success! append and update DB
                     val responseSummary = responseResult.getOrThrow()
                     summaries.add(responseSummary)
                     currentRetryCount = 0
@@ -651,8 +655,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     activeSessionDao.insertActiveSession(session)
 
                     if (isSessionDone) {
-                        // Finished entirely! Compiling output
-                        _processingState.value = ProcessingState.Loading("در حال جمع‌آوری و ذخیره خروجی نهایی...")
+                        withContext(Dispatchers.Main) {
+                            _processingState.value = ProcessingState.Loading("در حال جمع‌آوری و ذخیره خروجی نهایی...")
+                        }
                         val compiledResult = compileAndFormatSummaries(sections, summaries)
                         val baseName = session.outputFileName.substringBeforeLast(".")
                         val textFileName = "$baseName.txt"
@@ -665,7 +670,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val textUriStr = textUri?.toString() ?: ""
                         val htmlUriStr = htmlUri?.toString() ?: ""
 
-                        // Insert History Log for analytics
                         historyLogsDao.insertHistoryLog(
                             HistoryLog(
                                 fileName = session.originalFileName,
@@ -678,68 +682,70 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             )
                         )
 
-                        // Clean session
                         activeSessionDao.deleteActiveSession()
-                        _processingState.value = ProcessingState.Success(
-                            summary = compiledResult,
-                            savedPath = textFileName,
-                            savedHtmlPath = htmlFileName,
-                            textFileUri = textUriStr,
-                            htmlFileUri = htmlUriStr,
-                            htmlContent = htmlContent
-                        )
+                        withContext(Dispatchers.Main) {
+                            _processingState.value = ProcessingState.Success(
+                                summary = compiledResult,
+                                savedPath = textFileName,
+                                savedHtmlPath = htmlFileName,
+                                textFileUri = textUriStr,
+                                htmlFileUri = htmlUriStr,
+                                htmlContent = htmlContent
+                            )
+                        }
                         return@launch
                     } else {
-                        // Success wait-delay
-                        _processingState.value = ProcessingState.Running(
-                            originalFileName = session.originalFileName,
-                            currentSection = index + 1,
-                            totalSections = total,
-                            retriesLeft = retriesLeft,
-                            activeKeyTitle = rawKey.title,
-                            activeModelTitle = rawModel.title,
-                            statusMessage = "بخش ${index + 1} دریافت شد. ${settings.successDelaySeconds} ثانیه استراحت..."
-                        )
+                        // تأخیر پس از موفقیت
+                        withContext(Dispatchers.Main) {
+                            _processingState.value = ProcessingState.Running(
+                                originalFileName = session.originalFileName,
+                                currentSection = index + 1,
+                                totalSections = total,
+                                retriesLeft = retriesLeft,
+                                activeKeyTitle = rawKey.title,
+                                activeModelTitle = rawModel.title,
+                                statusMessage = "بخش ${index + 1} دریافت شد. ${settings.successDelaySeconds} ثانیه استراحت..."
+                            )
+                        }
                         delay(settings.successDelaySeconds * 1000L)
                     }
                 } else {
-                    // Error encountered
+                    // خطا در API
                     val exception = responseResult.exceptionOrNull()
                     val statusCode = (exception as? HttpException)?.code() ?: 0
-
                     val errMsg = exception?.localizedMessage ?: exception?.message ?: "$statusCode"
                     val details = "بخش ${index + 1} از $total - کلید: ${rawKey.title} - مدل: ${rawModel.code}\nاستک تریس: ${exception?.stackTraceToString() ?: "ندارد"}"
                     logError("خطا در پردازش بخش ${index + 1}: $errMsg (کد وضعیت: $statusCode)", details)
-
                     Log.e("SummarizerLoop", "API failure response: ${exception?.message}", exception)
 
                     if (statusCode == 403) {
-                        // 403 Error -> Proxy block / VPN problem. Set block state to halt loop
-                        _processingState.value = ProcessingState.VpnBlockError(
-                            sectionIndex = index,
-                            errorMsg = "خطای ممنوعیت (۴۰۳) به دلیل عدم انطباق IP کشور رخ داد. لطفاً فیلترشکن خود را روشن کنید یا به کشوری معتبر تغییر داده و دکمه ادامه را بزنید."
-                        )
+                        withContext(Dispatchers.Main) {
+                            _processingState.value = ProcessingState.VpnBlockError(
+                                sectionIndex = index,
+                                errorMsg = "خطای ممنوعیت (۴۰۳) به دلیل عدم انطباق IP کشور رخ داد. لطفاً فیلترشکن خود را روشن کنید یا به کشوری معتبر تغییر داده و دکمه ادامه را بزنید."
+                            )
+                        }
                         return@launch
                     }
 
-                    // Handles retries
                     currentRetryCount++
                     if (currentRetryCount <= retriesAllowed) {
                         val waitTime = if (statusCode == 503) settings.overloadDelaySeconds else settings.errorDelaySeconds
-                        _processingState.value = ProcessingState.Running(
-                            originalFileName = session.originalFileName,
-                            currentSection = index + 1,
-                            totalSections = total,
-                            retriesLeft = (retriesAllowed - currentRetryCount).coerceAtLeast(0),
-                            activeKeyTitle = rawKey.title,
-                            activeModelTitle = rawModel.title,
-                            statusMessage = "ناموفق خطای ($statusCode). تلاش مجدد تا ${waitTime} ثانیه دیگر..."
-                        )
+                        withContext(Dispatchers.Main) {
+                            _processingState.value = ProcessingState.Running(
+                                originalFileName = session.originalFileName,
+                                currentSection = index + 1,
+                                totalSections = total,
+                                retriesLeft = (retriesAllowed - currentRetryCount).coerceAtLeast(0),
+                                activeKeyTitle = rawKey.title,
+                                activeModelTitle = rawModel.title,
+                                statusMessage = "ناموفق خطای ($statusCode). تلاش مجدد تا ${waitTime} ثانیه دیگر..."
+                            )
+                        }
                         delay(waitTime * 1000L)
                     } else {
-                        // Max retries reached
+                        // حداکثر تلاش‌ها تمام شده
                         if (settings.autoSwitchOnLimit) {
-                            // Automatic switch behavior
                             if (activeModelIndex + 1 < models.size) {
                                 activeModelIndex++
                                 currentRetryCount = 0
@@ -748,22 +754,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 activeModelIndex = 0
                                 currentRetryCount = 0
                             } else {
-                                // No keys/models left! Show error
-                                _processingState.value = ProcessingState.Error(
-                                    "خطا در خلاصه‌سازی بخش ${index + 1}. تمامی کلیدها و مدل‌های تعریف شده با خطا مواجه شدند: ${exception?.localizedMessage ?: exception?.message}"
-                                )
+                                withContext(Dispatchers.Main) {
+                                    _processingState.value = ProcessingState.Error(
+                                        "خطا در خلاصه‌سازی بخش ${index + 1}. تمامی کلیدها و مدل‌های تعریف شده با خطا مواجه شدند: ${exception?.localizedMessage ?: exception?.message}"
+                                    )
+                                }
                                 return@launch
                             }
-                            // Wait standard error time before moving forward
                             delay(settings.errorDelaySeconds * 1000L)
                         } else {
-                            // Manual / Pause state to ask user (Default option 2)
-                            _processingState.value = ProcessingState.WaitingForUserDecision(
-                                sectionIndex = index,
-                                errorMsg = exception?.localizedMessage ?: exception?.message ?: "خطای ناشناخته",
-                                keyIndex = activeKeyIndex,
-                                modelIndex = activeModelIndex
-                            )
+                            // درخواست تصمیم از کاربر
+                            withContext(Dispatchers.Main) {
+                                _processingState.value = ProcessingState.WaitingForUserDecision(
+                                    sectionIndex = index,
+                                    errorMsg = exception?.localizedMessage ?: exception?.message ?: "خطای ناشناخته",
+                                    keyIndex = activeKeyIndex,
+                                    modelIndex = activeModelIndex
+                                )
+                            }
                             return@launch
                         }
                     }
@@ -853,7 +861,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun parseStructure(rawText: String): List<SecParsed> {
         val lines = rawText.split(Regex("\\r?\\n"))
-        val sectionSep = Regex("^={10,}.*$")
+        val sectionSep = Regex("^={10,}\\s*$")
         val chapterPat = Regex("^🚩\\s*\\[(.+?)\\]\\s*🚩\\s*$")
         val chapterPat2 = Regex("^🚩\\s*([^🚩\\]\\[]+?)\\s*🚩\\s*$")
 
@@ -1032,10 +1040,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun applyInline(text: String): String {
         var res = text
-        res = res
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
 
         res = res.replace(Regex("!\\[(.*?)\\]\\((.*?)\\)"), "<img class=\"md-img\" src=\"$2\" alt=\"$1\" loading=\"lazy\">")
         res = res.replace(Regex("\\[([^\\]]+)\\]\\(([^)]+)\\)"), "<a class=\"md-link\" href=\"$2\" target=\"_blank\" rel=\"noopener\">$1</a>")
@@ -1053,8 +1057,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         res = res.replace(Regex("\\(\\(([\\s\\S]+?)\\)\\)"), "<mark class=\"hl-1\">$1</mark>")
 
         res = res.replace(Regex("«([\\s\\S]+?)»"), "<span class=\"cl-4\">$1</span>")
-        res = res.replace(Regex("&lt;(((?!sp|ma|im|a|li|ul|ol|p|h\\d).)+?)&gt;"), "<span class=\"cl-3\">$1</span>")
-        res = res.replace(Regex("<(((?!sp|ma|im|a|li|ul|ol|p|h\\d).)+?)>"), "<span class=\"cl-3\">$1</span>")
+        res = res.replace(Regex("<([^<>]+?)>")) { match ->
+    val inner = match.groupValues[1]
+        if (Regex("^/?\\w[\\w\\-]*(\\s|/?>|$)").matches(inner)) {
+            match.value  // تگ HTML است، دست نزن
+        } else {
+            "<span class=\"cl-3\">$inner</span>"
+        }
+    }
         res = res.replace(Regex("\\[([^\\[\\]]+?)\\]"), "<span class=\"cl-2\">$1</span>")
         res = res.replace(Regex("¥¥([^¥]+?)¥¥"), "<span class=\"cl-1\">$1</span>")
 
