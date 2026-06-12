@@ -1,3 +1,5 @@
+import java.util.Base64
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.kotlin.compose)
@@ -14,10 +16,24 @@ android {
     applicationId = "com.aistudio.txtsummarizer.kjpqxw"
     minSdk = 24
     targetSdk = 36
-    versionCode = 2
-    versionName = "1.0.1"
+    versionCode = 1
+    versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+  }
+
+  // Automatically decode debug.keystore from debug.keystore.base64 if it does not exist
+  val debugKeystoreFile = file("${rootDir}/debug.keystore")
+  val base64File = file("${rootDir}/debug.keystore.base64")
+  if (!debugKeystoreFile.exists() && base64File.exists()) {
+    try {
+      val base64Content = base64File.readText().replace("\\s".toRegex(), "")
+      val decodedBytes = Base64.getDecoder().decode(base64Content)
+      debugKeystoreFile.writeBytes(decodedBytes)
+      println("Generated debug.keystore from base64.")
+    } catch (e: Exception) {
+      println("Failed to decode debug.keystore from base64: ${e.message}")
+    }
   }
 
   signingConfigs {
