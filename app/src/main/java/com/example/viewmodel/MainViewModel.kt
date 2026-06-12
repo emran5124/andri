@@ -112,7 +112,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (json.isBlank()) {
                 listOf(
                     ModelConfig("gemini-3.5-flash", "Gemini 3.5 Flash"),
-                    ModelConfig("gemini-3-flash-preview", "Gemini 3 Flash"),
+                    ModelConfig("gemini-3-flash-preview", "Gemini 3-Flash Preview"),
                     ModelConfig("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite")
                 )
             } else {
@@ -124,7 +124,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             SharingStarted.WhileSubscribed(5000),
             listOf(
                 ModelConfig("gemini-3.5-flash", "Gemini 3.5 Flash"),
-                ModelConfig("gemini-3-flash-preview", "Gemini 3 Flash"),
+                ModelConfig("gemini-3-flash-preview", "Gemini 3-Flash Preview"),
                 ModelConfig("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite")
             )
         )
@@ -292,7 +292,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (json.isBlank()) {
             return listOf(
                 ModelConfig("gemini-3.5-flash", "Gemini 3.5 Flash"),
-                ModelConfig("gemini-3-flash-preview", "Gemini 3 Flash"),
+                ModelConfig("gemini-3-flash-preview", "Gemini 3-Flash Preview"),
                 ModelConfig("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite")
             )
         }
@@ -304,7 +304,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (json.isBlank()) {
             return listOf(
                 ModelConfig("gemini-3.5-flash", "Gemini 3.5 Flash"),
-                ModelConfig("gemini-3-flash-preview", "Gemini 3 flash"),
+                ModelConfig("gemini-3-flash-preview", "Gemini 3-Flash Preview"),
                 ModelConfig("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite")
             )
         }
@@ -579,7 +579,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun runProcessingLoop(context: Context, startSession: ActiveSession) {
         processingJob?.cancel()
-        processingJob = viewModelScope.launch(Dispatchers.IO) {  // ← حلقه روی نخ IO
+        processingJob = viewModelScope.launch {
             var session = startSession
             val sections = JsonSerializer.deserializeStrings(session.rawSectionsJson)
             val summaries = JsonSerializer.deserializeStrings(session.accumulatedSummariesJson).toMutableList()
@@ -591,46 +591,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 val keys = getEffectiveKeys()
                 if (keys.isEmpty()) {
-                    withContext(Dispatchers.Main) {
-                        _processingState.value = ProcessingState.Error(
-                            "برای خلاصه‌سازی نیاز به تنظیم حداقل یک کلید API در صفحه مربوطه است!"
-                        )
-                    }
+                    _processingState.value = ProcessingState.Error("برای خلاصه‌سازی نیاز به تنظیم حداقل یک کلید API در صفحه مربوطه است!")
                     return@launch
                 }
 
                 // Ensure pointers are safe
-                if (activeKeyIndex >= keys.size) activeKeyIndex = 0
+                if (activeKeyIndex >= keys.size) {
+                    activeKeyIndex = 0
+                }
                 val rawKey = keys[activeKeyIndex]
                 val models = JsonSerializer.deserializeModels(rawKey.modelsJson)
                 if (models.isEmpty()) {
-                    withContext(Dispatchers.Main) {
-                        _processingState.value = ProcessingState.Error("کلید انتخاب شده فاقد مدل‌های خلاصه فعال است.")
-                    }
+                    _processingState.value = ProcessingState.Error("کلید انتخاب شده فاقد مدل‌های خلاصه فعال است.")
                     return@launch
                 }
-
-                if (activeModelIndex >= models.size) activeModelIndex = 0
+                
+                if (activeModelIndex >= models.size) {
+                    activeModelIndex = 0
+                }
                 val rawModel = models[activeModelIndex]
 
                 val settings = appSettingsFlow.value ?: AppSettings()
                 val retriesAllowed = settings.retryAttemptsLimit
                 val retriesLeft = (retriesAllowed - currentRetryCount).coerceAtLeast(0)
 
-                // به‌روزرسانی وضعیت در حال اجرا
-                withContext(Dispatchers.Main) {
-                    _processingState.value = ProcessingState.Running(
-                        originalFileName = session.originalFileName,
-                        currentSection = index + 1,
-                        totalSections = total,
-                        retriesLeft = retriesLeft,
-                        activeKeyTitle = rawKey.title,
-                        activeModelTitle = rawModel.title,
-                        statusMessage = "در حال ارسال بخش ${index + 1} از $total برای خلاصه‌سازی..."
-                    )
-                }
+                _processingState.value = ProcessingState.Running(
+                    originalFileName = session.originalFileName,
+                    currentSection = index + 1,
+                    totalSections = total,
+                    retriesLeft = retriesLeft,
+                    activeKeyTitle = rawKey.title,
+                    activeModelTitle = rawModel.title,
+                    statusMessage = "در حال ارسال بخش ${index + 1} از $total برای خلاصه‌سازی..."
+                )
 
-                // فراخوانی API (خودش با Dispatchers.IO انجام می‌شود)
+                // Call the API
                 val responseResult = callGeminiApi(
                     apiKey = rawKey.apiKey,
                     modelCode = rawModel.code,
@@ -639,6 +634,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
 
                 if (responseResult.isSuccess) {
+                    // Success! append and update DB
                     val responseSummary = responseResult.getOrThrow()
                     summaries.add(responseSummary)
                     currentRetryCount = 0
@@ -655,9 +651,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     activeSessionDao.insertActiveSession(session)
 
                     if (isSessionDone) {
-                        withContext(Dispatchers.Main) {
-                            _processingState.value = ProcessingState.Loading("در حال جمع‌آوری و ذخیره خروجی نهایی...")
-                        }
+                        // Finished entirely! Compiling output
+                        _processingState.value = ProcessingState.Loading("در حال جمع‌آوری و ذخیره خروجی نهایی...")
                         val compiledResult = compileAndFormatSummaries(sections, summaries)
                         val baseName = session.outputFileName.substringBeforeLast(".")
                         val textFileName = "$baseName.txt"
@@ -670,6 +665,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val textUriStr = textUri?.toString() ?: ""
                         val htmlUriStr = htmlUri?.toString() ?: ""
 
+                        // Insert History Log for analytics
                         historyLogsDao.insertHistoryLog(
                             HistoryLog(
                                 fileName = session.originalFileName,
@@ -682,70 +678,68 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             )
                         )
 
+                        // Clean session
                         activeSessionDao.deleteActiveSession()
-                        withContext(Dispatchers.Main) {
-                            _processingState.value = ProcessingState.Success(
-                                summary = compiledResult,
-                                savedPath = textFileName,
-                                savedHtmlPath = htmlFileName,
-                                textFileUri = textUriStr,
-                                htmlFileUri = htmlUriStr,
-                                htmlContent = htmlContent
-                            )
-                        }
+                        _processingState.value = ProcessingState.Success(
+                            summary = compiledResult,
+                            savedPath = textFileName,
+                            savedHtmlPath = htmlFileName,
+                            textFileUri = textUriStr,
+                            htmlFileUri = htmlUriStr,
+                            htmlContent = htmlContent
+                        )
                         return@launch
                     } else {
-                        // تأخیر پس از موفقیت
-                        withContext(Dispatchers.Main) {
-                            _processingState.value = ProcessingState.Running(
-                                originalFileName = session.originalFileName,
-                                currentSection = index + 1,
-                                totalSections = total,
-                                retriesLeft = retriesLeft,
-                                activeKeyTitle = rawKey.title,
-                                activeModelTitle = rawModel.title,
-                                statusMessage = "بخش ${index + 1} دریافت شد. ${settings.successDelaySeconds} ثانیه استراحت..."
-                            )
-                        }
+                        // Success wait-delay
+                        _processingState.value = ProcessingState.Running(
+                            originalFileName = session.originalFileName,
+                            currentSection = index + 1,
+                            totalSections = total,
+                            retriesLeft = retriesLeft,
+                            activeKeyTitle = rawKey.title,
+                            activeModelTitle = rawModel.title,
+                            statusMessage = "بخش ${index + 1} دریافت شد. ${settings.successDelaySeconds} ثانیه استراحت..."
+                        )
                         delay(settings.successDelaySeconds * 1000L)
                     }
                 } else {
-                    // خطا در API
+                    // Error encountered
                     val exception = responseResult.exceptionOrNull()
                     val statusCode = (exception as? HttpException)?.code() ?: 0
+
                     val errMsg = exception?.localizedMessage ?: exception?.message ?: "$statusCode"
                     val details = "بخش ${index + 1} از $total - کلید: ${rawKey.title} - مدل: ${rawModel.code}\nاستک تریس: ${exception?.stackTraceToString() ?: "ندارد"}"
                     logError("خطا در پردازش بخش ${index + 1}: $errMsg (کد وضعیت: $statusCode)", details)
+
                     Log.e("SummarizerLoop", "API failure response: ${exception?.message}", exception)
 
                     if (statusCode == 403) {
-                        withContext(Dispatchers.Main) {
-                            _processingState.value = ProcessingState.VpnBlockError(
-                                sectionIndex = index,
-                                errorMsg = "خطای ممنوعیت (۴۰۳) به دلیل عدم انطباق IP کشور رخ داد. لطفاً فیلترشکن خود را روشن کنید یا به کشوری معتبر تغییر داده و دکمه ادامه را بزنید."
-                            )
-                        }
+                        // 403 Error -> Proxy block / VPN problem. Set block state to halt loop
+                        _processingState.value = ProcessingState.VpnBlockError(
+                            sectionIndex = index,
+                            errorMsg = "خطای ممنوعیت (۴۰۳) به دلیل عدم انطباق IP کشور رخ داد. لطفاً فیلترشکن خود را روشن، خاموش یا به کشوری معتبر تغییر داده و دکمه ادامه را بزنید."
+                        )
                         return@launch
                     }
 
+                    // Handles retries
                     currentRetryCount++
                     if (currentRetryCount <= retriesAllowed) {
                         val waitTime = if (statusCode == 503) settings.overloadDelaySeconds else settings.errorDelaySeconds
-                        withContext(Dispatchers.Main) {
-                            _processingState.value = ProcessingState.Running(
-                                originalFileName = session.originalFileName,
-                                currentSection = index + 1,
-                                totalSections = total,
-                                retriesLeft = (retriesAllowed - currentRetryCount).coerceAtLeast(0),
-                                activeKeyTitle = rawKey.title,
-                                activeModelTitle = rawModel.title,
-                                statusMessage = "ناموفق خطای ($statusCode). تلاش مجدد تا ${waitTime} ثانیه دیگر..."
-                            )
-                        }
+                        _processingState.value = ProcessingState.Running(
+                            originalFileName = session.originalFileName,
+                            currentSection = index + 1,
+                            totalSections = total,
+                            retriesLeft = (retriesAllowed - currentRetryCount).coerceAtLeast(0),
+                            activeKeyTitle = rawKey.title,
+                            activeModelTitle = rawModel.title,
+                            statusMessage = "ناموفق خطای ($statusCode). تلاش مجدد تا ${waitTime} ثانیه دیگر..."
+                        )
                         delay(waitTime * 1000L)
                     } else {
-                        // حداکثر تلاش‌ها تمام شده
+                        // Max retries reached
                         if (settings.autoSwitchOnLimit) {
+                            // Automatic switch behavior
                             if (activeModelIndex + 1 < models.size) {
                                 activeModelIndex++
                                 currentRetryCount = 0
@@ -754,24 +748,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 activeModelIndex = 0
                                 currentRetryCount = 0
                             } else {
-                                withContext(Dispatchers.Main) {
-                                    _processingState.value = ProcessingState.Error(
-                                        "خطا در خلاصه‌سازی بخش ${index + 1}. تمامی کلیدها و مدل‌های تعریف شده با خطا مواجه شدند: ${exception?.localizedMessage ?: exception?.message}"
-                                    )
-                                }
+                                // No keys/models left! Show error
+                                _processingState.value = ProcessingState.Error(
+                                    "خطا در خلاصه‌سازی بخش ${index + 1}. تمامی کلیدها و مدل‌های تعریف شده با خطا مواجه شدند: ${exception?.localizedMessage ?: exception?.message}"
+                                )
                                 return@launch
                             }
+                            // Wait standard error time before moving forward
                             delay(settings.errorDelaySeconds * 1000L)
                         } else {
-                            // درخواست تصمیم از کاربر
-                            withContext(Dispatchers.Main) {
-                                _processingState.value = ProcessingState.WaitingForUserDecision(
-                                    sectionIndex = index,
-                                    errorMsg = exception?.localizedMessage ?: exception?.message ?: "خطای ناشناخته",
-                                    keyIndex = activeKeyIndex,
-                                    modelIndex = activeModelIndex
-                                )
-                            }
+                            // Manual / Pause state to ask user (Default option 2)
+                            _processingState.value = ProcessingState.WaitingForUserDecision(
+                                sectionIndex = index,
+                                errorMsg = exception?.localizedMessage ?: exception?.message ?: "خطای ناشناخته",
+                                keyIndex = activeKeyIndex,
+                                modelIndex = activeModelIndex
+                            )
                             return@launch
                         }
                     }
@@ -857,7 +849,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     class ChapParsed(val title: String, val rawLines: MutableList<String> = mutableListOf())
-    class SecParsed(val title: String, val chapters: MutableList<ChapParsed> = mutableListOf())
+    class SecParsed(val title: String, val chapters: MutableList<ChapParsed> = mutableListOf(), val _buf: MutableList<String> = mutableListOf())
+
+    private fun escapeHtml(str: String): String {
+        return str
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
+            .replace("'", "&#39;")
+    }
 
     private fun parseStructure(rawText: String): List<SecParsed> {
         val lines = rawText.split(Regex("\\r?\\n"))
@@ -882,16 +883,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (currentSection != null) {
                 flushChapter()
                 if (currentSection!!.chapters.isEmpty()) {
-                    currentSection!!.chapters.add(ChapParsed(title = currentSection!!.title, rawLines = mutableListOf()))
+                    val secBuf = currentSection!!._buf
+                    currentSection!!.chapters.add(ChapParsed(title = currentSection!!.title, rawLines = secBuf))
                 }
+                currentSection!!._buf.clear()
                 sections.add(currentSection!!)
                 currentSection = null
             }
         }
 
         for (line in lines) {
-            val trimmed = line.trim()
-            if (sectionSep.matches(trimmed)) {
+            if (sectionSep.matches(line)) {
                 if (!inSep) {
                     inSep = true
                     pendingTitle = null
@@ -913,8 +915,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             var chapterTitle: String? = null
-            val m1 = chapterPat.find(trimmed)
-            val m2 = if (m1 == null) chapterPat2.find(trimmed) else null
+            val m1 = chapterPat.find(line)
+            val m2 = if (m1 == null) chapterPat2.find(line) else null
 
             if (m1 != null) {
                 chapterTitle = m1.groupValues[1].trim()
@@ -924,7 +926,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             if (chapterTitle != null) {
                 if (currentSection == null) {
-                    currentSection = SecParsed(title = "بخش جدید")
+                    currentSection = SecParsed(title = chapterTitle)
                 }
                 flushChapter()
                 currentChapter = ChapParsed(title = chapterTitle)
@@ -934,14 +936,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (currentChapter != null) {
                 currentChapter!!.rawLines.add(line)
             } else if (currentSection != null) {
-                if (currentSection!!.chapters.isEmpty()) {
-                    currentSection!!.chapters.add(ChapParsed(title = currentSection!!.title))
-                }
-                currentSection!!.chapters.last().rawLines.add(line)
-            } else {
-                currentSection = SecParsed(title = "خلاصه سند")
-                currentChapter = ChapParsed(title = "شروع بخش")
-                currentChapter!!.rawLines.add(line)
+                currentSection!!._buf.add(line)
             }
         }
 
@@ -949,98 +944,73 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return sections
     }
 
-    // ─── CONTENT PARSER ──────────────────────────────────────────────────────────
-    /**
-    * Convert raw Markdown + custom syntax lines into an HTML string.
-    *
-    * Parsing precedence:
-    *   1. Escape sequences (\* \[ etc.)
-    *   2. Code blocks (``` … ```)
-    *   3. Inline code (`…`)
-    *   4. Headings (#…)
-    *   5. Blockquotes (>)
-    *   6. Tables (|…|)
-    *   7. HR (---, ***)
-    *   8. Lists (- / * / 1.)
-    *   9. Links & Images
-    *  10. Bold / Italic
-    *  11. Custom highlight (<<>>, [[]], (()), ««»»)
-    *  12. Custom color ([text], (text), «text», <text>)
-    *  13. Line breaks
-    */
     private fun parseContent(rawLines: List<String>): String {
-        // Join lines for block-level parsing
         val raw = rawLines.joinToString("\n")
 
-        // ── 1. Protect escape sequences ──────────────────────────────────────────
         val escapes = mutableListOf<String>()
-        var text = raw.replace(Regex("""\\([*_`\[\]()~<>«»!#|\\])""")) { matchResult ->
-            val ch = matchResult.groupValues[1]
-            val idx = escapes.size
+        val text1 = Regex("\\\\([*_`\\[\\]()~<>«»!#|\\\\])").replace(raw) { match ->
+            val ch = match.groupValues[1]
             escapes.add(ch)
-            "\u0000ESC${idx}\u0000"
+            "\u0000ESC${escapes.size - 1}\u0000"
         }
 
-        // ── 2. Code blocks ───────────────────────────────────────────────────────
         val codeBlocks = mutableListOf<String>()
-        text = text.replace(Regex("""```([\w]*)\n?([\s\S]*?)```""")) { matchResult ->
-            val lang = matchResult.groupValues[1]
-            val code = matchResult.groupValues[2]
-            val idx = codeBlocks.size
-            codeBlocks.add(
-                "<pre class=\"code-block\" data-lang=\"${escapeHtml(lang)}\"><code>${escapeHtml(code.trim())}</code></pre>"
-            )
-            "\u0000CB${idx}\u0000"
+        val text2 = Regex("```([\\w]*)\\n?([\\s\\S]*?)```").replace(text1) { match ->
+            val lang = match.groupValues[1]
+            val code = match.groupValues[2]
+            val block = "<pre class=\"code-block\" data-lang=\"${escapeHtml(lang)}\"><code>${escapeHtml(code.trim())}</code></pre>"
+            codeBlocks.add(block)
+            "\u0000CB${codeBlocks.size - 1}\u0000"
         }
 
-        // ── 3. Inline code ───────────────────────────────────────────────────────
-        val inlineCode = mutableListOf<String>()
-        text = text.replace(Regex("""`([^`\n]+?)`""")) { matchResult ->
-            val code = matchResult.groupValues[1]
-            val idx = inlineCode.size
-            inlineCode.add("<code class=\"inline-code\">${escapeHtml(code)}</code>")
-            "\u0000IC${idx}\u0000"
+        val inlineCodes = mutableListOf<String>()
+        val text3 = Regex("`([^`\\n]+?)`").replace(text2) { match ->
+            val code = match.groupValues[1]
+            val block = "<code class=\"inline-code\">${escapeHtml(code)}</code>"
+            inlineCodes.add(block)
+            "\u0000IC${inlineCodes.size - 1}\u0000"
         }
 
-        // Split into lines for block-level processing
-        val lines = text.split("\n")
-
+        val lines = text3.split('\n')
         val outputBlocks = mutableListOf<String>()
-        val listBuffer = mutableListOf<Pair<Int, String>>() // { depth, content }
+
+        class ListItem(val depth: Int, val content: String)
+        val listBuffer = mutableListOf<ListItem>()
         var listOrdered = false
 
-        fun renderList(items: List<Pair<Int, String>>, ordered: Boolean): String {
-            val tag = if (ordered) "ol" else "ul"
-            val html = StringBuilder("<$tag class=\"md-list\">")
-            for ((_, content) in items) {
-                html.append("<li>").append(content).append("</li>")
-            }
-            html.append("</$tag>")
-            return html.toString()
-        }
         fun flushList() {
             if (listBuffer.isEmpty()) return
-            outputBlocks.add(renderList(listBuffer, listOrdered))
+            val tag = if (listOrdered) "ol" else "ul"
+            val html = java.lang.StringBuilder("<$tag class=\"md-list\">")
+            for (item in listBuffer) {
+                html.append("<li>").append(item.content).append("</li>")
+            }
+            html.append("</$tag>")
+            outputBlocks.add(html.toString())
             listBuffer.clear()
         }
 
-        // Block table accumulator
         val tableBuffer = mutableListOf<String>()
 
         fun flushTable() {
             if (tableBuffer.size < 2) {
-                tableBuffer.forEach { l -> outputBlocks.add("<p>${applyInline(l)}</p>") }
+                for (l in tableBuffer) {
+                    outputBlocks.add(applyInline(l))
+                }
                 tableBuffer.clear()
                 return
             }
-            val html = StringBuilder("<div class=\"table-wrap\"><table class=\"md-table\"><thead><tr>")
-            val headers = tableBuffer[0].split("|").filter { it.trim().isNotEmpty() }
-            headers.forEach { h -> html.append("<th>").append(applyInline(h.trim())).append("</th>") }
+            val html = java.lang.StringBuilder("<div class=\"table-wrap\"><table class=\"md-table\"><thead><tr>")
+            val headers = tableBuffer[0].split('|').map { it.trim() }.filter { it.isNotEmpty() }
+            for (h in headers) {
+                html.append("<th>").append(applyInline(h)).append("</th>")
+            }
             html.append("</tr></thead><tbody>")
             for (i in 2 until tableBuffer.size) {
                 html.append("<tr>")
-                tableBuffer[i].split("|").filter { it.trim().isNotEmpty() }.forEach { c ->
-                    html.append("<td>").append(applyInline(c.trim())).append("</td>")
+                val cols = tableBuffer[i].split('|').map { it.trim() }.filter { it.isNotEmpty() }
+                for (c in cols) {
+                    html.append("<td>").append(applyInline(c)).append("</td>")
                 }
                 html.append("</tr>")
             }
@@ -1053,24 +1023,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val line = lines[i]
             val trimmed = line.trim()
 
-            // ── Code block placeholder ─────────────────────────────────────────────
-            if (Regex("""^\u0000CB\d+\u0000$""").matches(trimmed)) {
+            if (trimmed.startsWith("\u0000CB") && trimmed.endsWith("\u0000")) {
                 flushList()
                 flushTable()
-                outputBlocks.add(trimmed) // placeholder, restored later
+                outputBlocks.add(trimmed)
                 continue
             }
 
-            // ── Horizontal rule ────────────────────────────────────────────────────
-            if (Regex("""^[-*_]{3,}\s*$""").matches(trimmed)) {
+            if (Regex("^[-*_]{3,}\\s*$").matches(trimmed)) {
                 flushList()
                 flushTable()
                 outputBlocks.add("<hr class=\"md-hr\">")
                 continue
             }
 
-            // ── Heading ────────────────────────────────────────────────────────────
-            val hMatch = Regex("""^(#{1,6})\s+(.+)$""").find(trimmed)
+            val hMatch = Regex("^(#{1,6})\\s+(.+)$").find(trimmed)
             if (hMatch != null) {
                 flushList()
                 flushTable()
@@ -1080,62 +1047,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 continue
             }
 
-            // ── Blockquote ─────────────────────────────────────────────────────────
             if (trimmed.startsWith(">")) {
                 flushList()
                 flushTable()
-                val inner = applyInline(trimmed.removePrefix(">").trim())
+                val inner = applyInline(trimmed.substring(1).trim())
                 outputBlocks.add("<blockquote class=\"md-blockquote\">$inner</blockquote>")
                 continue
             }
 
-            // ── Table row ──────────────────────────────────────────────────────────
             if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
                 flushList()
-                tableBuffer.add(trimmed.removeSurrounding("|")) // strip leading/trailing |
+                tableBuffer.add(trimmed.substring(1, trimmed.length - 1))
                 continue
             } else if (tableBuffer.isNotEmpty()) {
                 flushTable()
             }
 
-            // ── Ordered list ───────────────────────────────────────────────────────
-            val olMatch = Regex("""^(\s*)(\d+)\.\s+(.+)$""").find(line)
+            val olMatch = Regex("^(\\s*)(\\d+)\\.\\s+(.+)$").find(line)
             if (olMatch != null) {
                 if (listBuffer.isNotEmpty() && !listOrdered) flushList()
                 listOrdered = true
-                val depth = olMatch.groupValues[1].length / 2
-                listBuffer.add(Pair(depth, applyInline(olMatch.groupValues[3])))
+                listBuffer.add(ListItem(olMatch.groupValues[1].length / 2, applyInline(olMatch.groupValues[3])))
                 continue
             }
 
-            // ── Unordered list ─────────────────────────────────────────────────────
-            val ulMatch = Regex("""^(\s*)[-*+]\s+(.+)$""").find(line)
+            val ulMatch = Regex("^(\\s*)[-*+]\\s+(.+)$").find(line)
             if (ulMatch != null) {
                 if (listBuffer.isNotEmpty() && listOrdered) flushList()
                 listOrdered = false
-                val depth = ulMatch.groupValues[1].length / 2
-                listBuffer.add(Pair(depth, applyInline(ulMatch.groupValues[2])))
+                listBuffer.add(ListItem(ulMatch.groupValues[1].length / 2, applyInline(ulMatch.groupValues[2])))
                 continue
             }
 
-            // Not a list item — flush pending list
-            if (listBuffer.isNotEmpty()) flushList()
+            if (listBuffer.isNotEmpty()) {
+                flushList()
+            }
 
-            // ── Empty line → paragraph break ───────────────────────────────────────
             if (trimmed.isEmpty()) {
                 outputBlocks.add("<p-break/>")
                 continue
             }
 
-            // ── Regular paragraph line ─────────────────────────────────────────────
             outputBlocks.add(applyInline(trimmed))
         }
 
         flushList()
         flushTable()
 
-        // Merge consecutive paragraph lines into <p> blocks
-        val html = StringBuilder()
+        val html = java.lang.StringBuilder()
         val paraLines = mutableListOf<String>()
 
         fun flushPara() {
@@ -1146,16 +1105,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         for (block in outputBlocks) {
-            if (block.startsWith("<h") ||
-                block.startsWith("<pre") ||
-                block.startsWith("<blockquote") ||
-                block.startsWith("<ul") ||
-                block.startsWith("<ol") ||
-                block.startsWith("<hr") ||
-                block.startsWith("<div") ||
-                block == "<p-break/>" ||
-                Regex("""^\u0000CB\d+\u0000$""").matches(block)
-            ) {
+            val isBlockElement = block.startsWith("<h") ||
+                    block.startsWith("<pre") ||
+                    block.startsWith("<blockquote") ||
+                    block.startsWith("<ul") ||
+                    block.startsWith("<ol") ||
+                    block.startsWith("<hr") ||
+                    block.startsWith("<div") ||
+                    block == "<p-break/>" ||
+                    (block.startsWith("\u0000CB") && block.endsWith("\u0000"))
+
+            if (isBlockElement) {
                 flushPara()
                 if (block != "<p-break/>") {
                     html.append(block)
@@ -1166,90 +1126,67 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         flushPara()
 
-        // ── Restore placeholders ─────────────────────────────────────────────────
-        var result = html.toString()
-        result = result.replace(Regex("""\u0000CB(\d+)\u0000""")) { matchResult ->
-            val i = matchResult.groupValues[1].toInt()
-            codeBlocks[i]
+        var finalHtml = html.toString()
+
+        finalHtml = Regex("\\x00CB(\\d+)\\x00").replace(finalHtml) { match ->
+            val idx = match.groupValues[1].toInt()
+            codeBlocks[idx]
         }
-        result = result.replace(Regex("""\u0000IC(\d+)\u0000""")) { matchResult ->
-            val i = matchResult.groupValues[1].toInt()
-            inlineCode[i]
+        finalHtml = Regex("\\x00IC(\\d+)\\x00").replace(finalHtml) { match ->
+            val idx = match.groupValues[1].toInt()
+            inlineCodes[idx]
         }
-        result = result.replace(Regex("""\u0000ESC(\d+)\u0000""")) { matchResult ->
-            val i = matchResult.groupValues[1].toInt()
-            escapeHtml(escapes[i])
+        finalHtml = Regex("\\x00ESC(\\d+)\\x00").replace(finalHtml) { match ->
+            val idx = match.groupValues[1].toInt()
+            escapeHtml(escapes[idx])
         }
 
-        return result
+        return finalHtml
     }
 
     private fun applyInline(text: String): String {
         var res = text
 
-        // ── Images ───────────────────────────────────────────────────────────────
-        res = res.replace(Regex("!\\[(.*?)\\]\\((.*?)\\)")) { match ->
+        res = Regex("!\\[([^\\]]*?)\\]\\(([^)]+?)\\)").replace(res) { match ->
             val alt = match.groupValues[1]
             val src = match.groupValues[2]
             "<img class=\"md-img\" src=\"${escapeHtml(src)}\" alt=\"${escapeHtml(alt)}\" loading=\"lazy\">"
         }
 
-        // ── Links ────────────────────────────────────────────────────────────────
-        res = res.replace(Regex("\\[([^\\]]+?)\\]\\(([^)]+?)\\)")) { match ->
+        res = Regex("\\[([^\\]]+?)\\]\\(([^)]+?)\\)").replace(res) { match ->
             val label = match.groupValues[1]
             val href = match.groupValues[2]
             "<a class=\"md-link\" href=\"${escapeHtml(href)}\" target=\"_blank\" rel=\"noopener\">$label</a>"
         }
 
-        // ── Bold + Italic combined ***text*** ────────────────────────────────────
-        res = res.replace(Regex("\\*{3}(.+?)\\*{3}"), "<strong><em>$1</em></strong>")
-        res = res.replace(Regex("_{3}(.+?)_{3}"), "<strong><em>$1</em></strong>")
+        res = Regex("\\*{3}(.+?)\\*{3}").replace(res, "<strong><em>$1</em></strong>")
+        res = Regex("_{3}(.+?)_{3}").replace(res, "<strong><em>$1</em></strong>")
 
-        // ── Bold **text** or __text__ ────────────────────────────────────────────
-        res = res.replace(Regex("\\*{2}(.+?)\\*{2}"), "<strong>$1</strong>")
-        res = res.replace(Regex("_{2}(.+?)_{2}"), "<strong>$1</strong>")
+        res = Regex("\\*{2}(.+?)\\*{2}").replace(res, "<strong>$1</strong>")
+        res = Regex("_{2}(.+?)_{2}").replace(res, "<strong>$1</strong>")
 
-        // ── Italic *text* or _text_ ──────────────────────────────────────────────
-        res = res.replace(Regex("\\*(.+?)\\*"), "<em>$1</em>")
-        res = res.replace(Regex("_(.+?)_"), "<em>$1</em>")
+        res = Regex("\\*(.+?)\\*").replace(res, "<em>$1</em>")
+        res = Regex("_(.+?)_").replace(res, "<em>$1</em>")
 
-        // ── Custom HIGHLIGHT syntax (must come before color to handle nesting) ───
-        // ««text»» — style 4
-        res = res.replace(Regex("««([\\s\\S]+?)»»"), "<mark class=\"hl-4\">$1</mark>")
-        // <<text>> — style 3
-        res = res.replace(Regex("<<([\\s\\S]+?)>>"), "<mark class=\"hl-3\">$1</mark>")
-        // [[text]] — style 2
-        res = res.replace(Regex("\\[\\[([\\s\\S]+?)]]"), "<mark class=\"hl-2\">$1</mark>")
-        // ((text)) — style 1
-        res = res.replace(Regex("\\(\\(([\\s\\S]+?)\\)\\)"), "<mark class=\"hl-1\">$1</mark>")
+        res = Regex("««([\\s\\S]+?)»»").replace(res, "<mark class=\"hl-4\">$1</mark>")
+        res = Regex("<<([\\s\\S]+?)>>").replace(res, "<mark class=\"hl-3\">$1</mark>")
+        res = Regex("\\[\\[([\\s\\S]+?)\\]\\]").replace(res, "<mark class=\"hl-2\">$1</mark>")
+        res = Regex("\\(\\(([\\s\\S]+?)\\)\\)").replace(res, "<mark class=\"hl-1\">$1</mark>")
 
-        // ── Custom COLOR syntax ──────────────────────────────────────────────────
-        // «text» — color 4
-        res = res.replace(Regex("«([\\s\\S]+?)»"), "<span class=\"cl-4\">$1</span>")
-        // <text> — color 3 (careful: don't match HTML tags)
-        res = res.replace(Regex("<([^<>]+?)>")) { match ->
+        res = Regex("«([\\s\\S]+?)»").replace(res, "<span class=\"cl-4\">$1</span>")
+        res = Regex("<([^<>]+?)>").replace(res) { match ->
             val inner = match.groupValues[1]
-            if (Regex("^/?\\w[\\w\\-]*(\\s|/?>|$)").matches(inner)) {
-                match.value  // تگ HTML است، دست نزن
+            val isHtmlTag = Regex("^/?\\w[\\w-]*(\\s|/?>|$)").containsMatchIn(inner)
+            if (isHtmlTag) {
+                match.value
             } else {
                 "<span class=\"cl-3\">$inner</span>"
             }
         }
-        // [text] — color 2 (only when not already consumed by link parser)
-        res = res.replace(Regex("\\[([^\\[\\]]+?)]"), "<span class=\"cl-2\">$1</span>")
-        // ¥¥text¥¥ — color 1
-        res = res.replace(Regex("¥¥([^¥]+?)¥¥"), "<span class=\"cl-1\">$1</span>")
+        res = Regex("\\[([^\\[\\]]+?)\\]").replace(res, "<span class=\"cl-2\">$1</span>")
+        res = Regex("¥¥([^¥]+?)¥¥").replace(res, "<span class=\"cl-1\">$1</span>")
 
         return res
-    }
-
-    private fun escapeHtml(text: String): String {
-        return text
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\"", "&quot;")
-            .replace("'", "&#039;")
     }
 
     private fun normaliseArabic(str: String): String {
@@ -1262,52 +1199,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .lowercase()
             .trim()
     }
-    private fun mapToJson(obj: Any?): String {
-        return when (obj) {
-            is Map<*, *> -> {
-                val entries = obj.entries.joinToString(",") { (k, v) ->
-                    // کلید همیشه String است و kotlinJsonEscape خودش " " را اضافه می‌کند
-                    "${kotlinJsonEscape(k as String)}:${mapToJson(v)}"
-                }
-                "{$entries}"
-            }
-            is List<*> -> {
-                val items = obj.joinToString(",") { mapToJson(it) }
-                "[$items]"
-            }
-            is String -> kotlinJsonEscape(obj)   // kotlinJsonEscape "..." را برمی‌گرداند
-            else -> "\"${obj.toString()}\""      // fallback (بعید است پیش بیاید)
-        }
-    }
 
-
-    private fun buildBookModel(sections: List<SecParsed>): Map<String, Any> {
-        val book = mutableListOf<Map<String, Any>>()
-        
-        for (sec in sections) {
-            val chapters = mutableListOf<Map<String, String>>()
-            
-            for (ch in sec.chapters) {
+    private fun bookToJson(sections: List<SecParsed>): String {
+        val sb = java.lang.StringBuilder()
+        sb.append("{\"sections\":[")
+        for (i in sections.indices) {
+            val sec = sections[i]
+            sb.append("{")
+            sb.append("\"title\":").append(kotlinJsonEscape(sec.title)).append(",")
+            sb.append("\"chapters\":[")
+            for (j in sec.chapters.indices) {
+                val ch = sec.chapters[j]
                 val htmlContent = parseContent(ch.rawLines)
                 val plainText = ch.rawLines.joinToString(" ")
                 
-                chapters.add(mapOf(
-                    "title" to ch.title,
-                    "html" to htmlContent,
-                    "search" to normaliseArabic(plainText),
-                    "plain" to plainText.take(300)
-                ))
+                sb.append("{")
+                sb.append("\"title\":").append(kotlinJsonEscape(ch.title)).append(",")
+                sb.append("\"html\":").append(kotlinJsonEscape(htmlContent)).append(",")
+                sb.append("\"search\":").append(kotlinJsonEscape(normaliseArabic(plainText))).append(",")
+                sb.append("\"plain\":").append(kotlinJsonEscape(if (plainText.length > 300) plainText.substring(0, 300) else plainText))
+                sb.append("}")
+                if (j < sec.chapters.size - 1) sb.append(",")
             }
-            
-            book.add(mapOf(
-                "title" to sec.title,
-                "chapters" to chapters
-            ))
+            sb.append("]")
+            sb.append("}")
+            if (i < sections.size - 1) sb.append(",")
         }
-        
-        return mapOf("sections" to book)
+        sb.append("]}")
+        return sb.toString()
     }
-
 
     private fun kotlinJsonEscape(str: String): String {
         val out = java.lang.StringBuilder()
@@ -1332,30 +1252,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return out.toString()
     }
 
-
     fun generateHtmlFromSummaries(fileName: String, summaries: List<String>): String {
         val rawText = summaries.joinToString("\n🚩 [بخش خلاصه] 🚩\n")
         val parsed = parseStructure(rawText)
-
-        val book = buildBookModel(parsed)
-        // جایگزین خط مشکل‌دار: بدون JsonObject
-        val bookJson = mapToJson(book)
-
+        val bookJson = bookToJson(parsed)
         val randSuffix = java.util.UUID.randomUUID().toString().take(6)
         val lsPrefix = "\"perBook_$randSuffix\""
 
-        return """<!DOCTYPE html>
+        var html = """<!DOCTYPE html>
 <html lang="fa" dir="rtl">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#1a1a2e">
-<title>کتاب‌خوان</title>
+<title>__FILE_NAME__</title>
 <style>
 /* ═══════════════════════════════════════════════════════════════
    FONT
 ═══════════════════════════════════════════════════════════════ */
-:root { --font-main: 'Vazir', 'Tahoma', 'Arial Unicode MS', sans-serif; }
+@import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;700;900&display=swap');
 
 /* ═══════════════════════════════════════════════════════════════
    THEMES
@@ -1480,7 +1395,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 [data-theme="monochromatic"] {
   --bg:#f0f0f0; --surface:#f8f8f8; --surface2:#e4e4e4;
   --text:#181818; --text-muted:#606060;
-  --border:#c0c0c0; --accent:#404040; --accent2:#606060;
+  --border:#c0c0c0; --accent:#4040d0; --accent2:#606060;
   --nav-bg:#181818; --nav-text:#e0e0e0; --nav-active:#a0a0a0;
   --progress:#707070; --scrollbar:#b0b0b0;
   --hl1-bg:#d8d8d8;--hl1-fg:#101010; --hl2-bg:#c8c8c8;--hl2-fg:#101010;
@@ -1500,7 +1415,7 @@ html {
 }
 
 body {
-  font-family: var(--font-main);
+  font-family: 'Vazirmatn', sans-serif;
   font-size: var(--font-size);
   line-height: var(--line-height);
   background: var(--bg);
@@ -1590,7 +1505,7 @@ body {
   padding: 10px 16px;
   background: none; border: none; cursor: pointer;
   color: var(--nav-text);
-  font-family: var(--font-main);
+  font-family: 'Vazirmatn';
   font-size: 13.5px;
   text-align: right;
   direction: rtl;
@@ -1620,7 +1535,7 @@ body {
   padding: 8px 32px 8px 16px;
   background: none; border: none; cursor: pointer;
   color: rgba(255,255,255,.6);
-  font-family: var(--font-main);
+  font-family: 'Vazirmatn';
   font-size: 12.5px;
   text-align: right;
   direction: rtl;
@@ -1724,7 +1639,7 @@ body {
   border-radius: 22px;
   background: var(--surface2);
   color: var(--text);
-  font-family: var(--font-main);
+  font-family: 'Vazirmatn';
   font-size: 14px;
   direction: rtl;
   outline: none;
@@ -1983,7 +1898,7 @@ mark.hl-4 { background:var(--hl4-bg); color:var(--hl4-fg); padding:1px 3px; bord
   border-radius: 8px;
   background: var(--surface2);
   color: var(--text);
-  font-family: var(--font-main);
+  font-family: 'Vazirmatn';
   font-size: 13px;
   direction: rtl;
 }
@@ -2006,7 +1921,7 @@ mark.hl-4 { background:var(--hl4-bg); color:var(--hl4-fg); padding:1px 3px; bord
   border-radius: 8px;
   padding: 6px 14px;
   cursor: pointer;
-  font-family: var(--font-main);
+  font-family: 'Vazirmatn';
   font-size: 12px;
   transition: opacity .2s;
 }
@@ -2157,7 +2072,7 @@ body.focus-mode #bottombar:hover { opacity: 1; pointer-events: all; }
 // ════════════════════════════════════════════════════════════════
 //  BOOK DATA — embedded at build time
 // ════════════════════════════════════════════════════════════════
-const BOOK = $bookJson;
+const BOOK = __BOOK_JSON__;
 
 // ════════════════════════════════════════════════════════════════
 //  BUILD FLAT INDEX
@@ -2177,11 +2092,11 @@ BOOK.sections.forEach((sec, si) => {
 
 function normalise(str) {
   return str
-    .replace(/[\\u064B-\\u065F\\u0670]/g, '') // diacritics
-    .replace(/[\\uFEFF\\u200B-\\u200F]/g, '')  // zero-width
-    .replace(/\\u0649/g, '\\u06CC')             // ي → ی
-    .replace(/\\u0643/g, '\\u06A9')             // ك → ک
-    .replace(/\\u0640/g, '')                    // tatweel
+    .replace(/[\u064B-\u065F\u0670]/g, '') // diacritics
+    .replace(/[\uFEFF\u200B-\u200F]/g, '')  // zero-width
+    .replace(/\u0649/g, '\u06CC')             // ي → ی
+    .replace(/\u0643/g, '\u06A9')             // ك → ک
+    .replace(/\u0640/g, '')                    // tatweel
     .toLowerCase()
     .trim();
 }
@@ -2196,7 +2111,7 @@ let searchTerm = '';
 // Virtualised render: which chapter blocks are mounted
 const mounted = new Set(); // key = "si-ci"
 
-const LS_PREFIX = $lsPrefix;
+const LS_PREFIX = __LS_PREFIX__;
 
 function lsGet(k, def = null) {
   try { const v = localStorage.getItem(LS_PREFIX + k); return v !== null ? JSON.parse(v) : def; } catch { return def; }
@@ -2444,7 +2359,7 @@ function updateProgress(si, ci) {
 }
 
 function toPersianNum(n) {
-  return String(n).replace(/\\d/g, d => '۰۱۲۳۴۵۶۷۸۹'[d]);
+  return String(n).replace(/\d/g, d => '۰۱۲۳۴۵۶۷۸۹'[d]);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -2456,7 +2371,7 @@ function updateURL(si, ci) {
 }
 
 function parseHashNav() {
-  const m = location.hash.match(/^#s(\\d+)c(\\d+)$/);
+  const m = location.hash.match(/^#s(\d+)c(\d+)$/);
   if (m) return { si: +m[1], ci: +m[2] };
   return null;
 }
@@ -2548,7 +2463,7 @@ function renderSearchDropdown(results, q) {
 
 function highlightSnippet(text, q) {
   const safe = esc(text);
-  const safeQ = esc(q).replace(/[.*+?^$()|\\[\\]\\\\]/g, '\\\\$&');
+  const safeQ = esc(q).replace(/[.*+?^${'$'}()|\[\]\\]/g, '\\$&');
   return safe.replace(new RegExp(safeQ, 'gi'), m => `<mark>${'$'}{m}</mark>`);
 }
 
@@ -2558,7 +2473,7 @@ function showAllResults(results, q) {
   win.style.cssText = 'position:fixed;inset:0;background:var(--surface);z-index:900;overflow-y:auto;padding:70px 16px 20px;direction:rtl;';
   win.innerHTML = `
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
-      <button onclick="this.closest('[style]').remove()" style="background:var(--surface2);border:1px solid var(--border);padding:6px 14px;border-radius:8px;cursor:pointer;font-family:var(--font-main);color:var(--text);">بازگشت</button>
+      <button onclick="this.closest('[style]').remove()" style="background:var(--surface2);border:1px solid var(--border);padding:6px 14px;border-radius:8px;cursor:pointer;font-family:'Vazirmatn';color:var(--text);">بازگشت</button>
       <span style="font-size:14px;color:var(--text-muted)">${'$'}{toPersianNum(results.length)} نتیجه برای «${'$'}{esc(q)}»</span>
     </div>
   `;
@@ -2626,7 +2541,7 @@ function highlightTextInEl(el, q, normQ) {
     const txt = node.textContent;
     if (!normalise(txt).includes(normQ)) continue;
     // Simple highlight
-    const re = new RegExp(q.replace(/[.*+?^$()|[\\]\\\\]/g, '\\\\$&'), 'gi');
+    const re = new RegExp(q.replace(/[.*+?^${'$'}()|\[\]\\]/g, '\\$&'), 'gi');
     const html = txt.replace(re, m => `<mark class="search-mark">${'$'}{m}</mark>`);
     const wrap = document.createElement('span');
     wrap.innerHTML = html;
@@ -2643,7 +2558,7 @@ function hexToHsl(hex) {
   let b = parseInt(hex.slice(5,7),16)/255;
   const max = Math.max(r,g,b), min = Math.min(r,g,b);
   let h,s,l=(max+min)/2;
-  if (max===min){ h=s=0; }
+  if(max===min){ h=s=0; }
   else {
     const d=max-min; s=l>.5?d/(2-max-min):d/(max+min);
     switch(max){ case r:h=((g-b)/d+(g<b?6:0))/6;break; case g:h=((b-r)/d+2)/6;break; default:h=((r-g)/d+4)/6; }
@@ -2916,8 +2831,13 @@ function esc(str) {
 })();
 </script>
 </body>
-</html>
-""".trimIndent()
+</html>"""
+
+        html = html.replace("__BOOK_JSON__", bookJson)
+        html = html.replace("__LS_PREFIX__", lsPrefix)
+        html = html.replace("__FILE_NAME__", escapeHtml(fileName))
+
+        return html
     }
 
     fun clearHistory() {
