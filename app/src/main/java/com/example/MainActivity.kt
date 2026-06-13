@@ -1028,6 +1028,8 @@ fun ApiKeysTab(viewModel: MainViewModel) {
     var showAddDialog by remember { mutableStateOf(false) }
     var keyTitle by remember { mutableStateOf("") }
     var keyValue by remember { mutableStateOf("") }
+    var editingKeyId by remember { mutableStateOf<Int?>(null) }
+    var editingPriorityOrder by remember { mutableStateOf(0) }
 
     // Models tracking
     val selectedModelsList = remember { mutableStateListOf<ModelConfig>() }
@@ -1035,11 +1037,20 @@ fun ApiKeysTab(viewModel: MainViewModel) {
     val defaultModelOptions by viewModel.globalModelsFlow.collectAsState()
 
     if (showAddDialog) {
+        val onDismissAction = {
+            showAddDialog = false
+            keyTitle = ""
+            keyValue = ""
+            selectedModelsList.clear()
+            editingKeyId = null
+            editingPriorityOrder = 0
+        }
+
         AlertDialog(
-            onDismissRequest = { showAddDialog = false },
+            onDismissRequest = onDismissAction,
             title = {
                 Text(
-                    text = "افزودن API Key جدید",
+                    text = if (editingKeyId == null) "افزودن API Key جدید" else "ویرایش API Key",
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.fillMaxWidth(),
                     textAlign = TextAlign.Right
@@ -1155,10 +1166,16 @@ fun ApiKeysTab(viewModel: MainViewModel) {
                 Button(
                     onClick = {
                         if (keyTitle.isNotBlank() && keyValue.isNotBlank() && selectedModelsList.isNotEmpty()) {
-                            viewModel.addApiKey(keyTitle, keyValue, selectedModelsList.toList())
+                            if (editingKeyId == null) {
+                                viewModel.addApiKey(keyTitle, keyValue, selectedModelsList.toList())
+                            } else {
+                                viewModel.updateApiKey(editingKeyId!!, keyTitle, keyValue, selectedModelsList.toList(), editingPriorityOrder)
+                            }
                             keyTitle = ""
                             keyValue = ""
                             selectedModelsList.clear()
+                            editingKeyId = null
+                            editingPriorityOrder = 0
                             showAddDialog = false
                         }
                     }
@@ -1167,7 +1184,7 @@ fun ApiKeysTab(viewModel: MainViewModel) {
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showAddDialog = false }) {
+                TextButton(onClick = onDismissAction) {
                     Text("لغو")
                 }
             }
@@ -1176,7 +1193,14 @@ fun ApiKeysTab(viewModel: MainViewModel) {
 
     Scaffold(
         floatingActionButton = {
-            FloatingActionButton(onClick = { showAddDialog = true }) {
+            FloatingActionButton(onClick = {
+                editingKeyId = null
+                editingPriorityOrder = 0
+                keyTitle = ""
+                keyValue = ""
+                selectedModelsList.clear()
+                showAddDialog = true
+            }) {
                 Icon(Icons.Default.Add, contentDescription = "Add Key")
             }
         }
@@ -1270,6 +1294,17 @@ fun ApiKeysTab(viewModel: MainViewModel) {
                                 }
                                 IconButton(onClick = { viewModel.moveApiKeyDown(config) }) {
                                     Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move Down")
+                                }
+                                IconButton(onClick = {
+                                    editingKeyId = config.id
+                                    editingPriorityOrder = config.priorityOrder
+                                    keyTitle = config.title
+                                    keyValue = config.apiKey
+                                    selectedModelsList.clear()
+                                    selectedModelsList.addAll(models)
+                                    showAddDialog = true
+                                }) {
+                                    Icon(Icons.Default.Edit, contentDescription = "Edit Key", tint = MaterialTheme.colorScheme.primary)
                                 }
                                 IconButton(onClick = { viewModel.deleteApiKey(config.id) }) {
                                     Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)

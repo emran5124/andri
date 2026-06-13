@@ -16,23 +16,46 @@ android {
     applicationId = "com.aistudio.txtsummarizer.kjpqxw"
     minSdk = 24
     targetSdk = 36
-    versionCode = 2
-    versionName = "1.0.1"
+    versionCode = 28
+    versionName = "1.0.27"
+
+    // Dynamic version override to ensure every single local or GitHub build increments automatically
+    val dynamicVersionCode = System.getenv("APP_VERSION_CODE")?.toIntOrNull() 
+        ?: (System.currentTimeMillis() / 100000).toInt()
+    val dynamicVersionName = System.getenv("APP_VERSION_NAME") 
+        ?: "1.0.$dynamicVersionCode"
+
+    versionCode = dynamicVersionCode
+    versionName = dynamicVersionName
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
-  // Automatically decode debug.keystore from debug.keystore.base64 if it does not exist
-  val debugKeystoreFile = file("${rootDir}/debug.keystore")
-  val base64File = file("${rootDir}/debug.keystore.base64")
-  if (!debugKeystoreFile.exists() && base64File.exists()) {
-    try {
-      val base64Content = base64File.readText().replace("\\s".toRegex(), "")
-      val decodedBytes = Base64.getDecoder().decode(base64Content)
-      debugKeystoreFile.writeBytes(decodedBytes)
-      println("Generated debug.keystore from base64.")
-    } catch (e: Exception) {
-      println("Failed to decode debug.keystore from base64: ${e.message}")
+  // Automatically decode debug.keystore from debug.keystore.base64 in project or workspace directories
+  val possibleBase64Files = listOf(
+    file("${rootDir}/debug.keystore.base64"),
+    file("${projectDir}/../debug.keystore.base64"),
+    file("../debug.keystore.base64")
+  )
+  val base64File = possibleBase64Files.firstOrNull { it.exists() }
+
+  if (base64File != null) {
+    val targetKeystores = listOf(
+      file("${rootDir}/debug.keystore"),
+      file("${projectDir}/debug.keystore"),
+      file("debug.keystore")
+    )
+    for (targetFile in targetKeystores) {
+      if (!targetFile.exists()) {
+        try {
+          val base64Content = base64File.readText().replace("\\s".toRegex(), "")
+          val decodedBytes = Base64.getDecoder().decode(base64Content)
+          targetFile.writeBytes(decodedBytes)
+          println("Generated debug.keystore from base64 at path: ${targetFile.absolutePath}")
+        } catch (e: Exception) {
+          println("Failed to decode debug.keystore to ${targetFile.absolutePath}: ${e.message}")
+        }
+      }
     }
   }
 
@@ -45,7 +68,13 @@ android {
       keyPassword = System.getenv("KEY_PASSWORD")
     }
     create("debugConfig") {
-      storeFile = file("${rootDir}/debug.keystore")
+      val keystorePaths = listOf(
+        file("${rootDir}/debug.keystore"),
+        file("${projectDir}/debug.keystore"),
+        file("debug.keystore")
+      )
+      val keystoreFile = keystorePaths.firstOrNull { it.exists() } ?: file("${rootDir}/debug.keystore")
+      storeFile = keystoreFile
       storePassword = "android"
       keyAlias = "androiddebugkey"
       keyPassword = "android"
@@ -60,7 +89,12 @@ android {
       signingConfig = signingConfigs.getByName("release")
     }
     debug {
-      if (file("${rootDir}/debug.keystore").exists()) {
+      val keystorePaths = listOf(
+        file("${rootDir}/debug.keystore"),
+        file("${projectDir}/debug.keystore"),
+        file("debug.keystore")
+      )
+      if (keystorePaths.any { it.exists() }) {
         signingConfig = signingConfigs.getByName("debugConfig")
       }
     }
