@@ -35,17 +35,20 @@ jobs:
         if vc_match and vn_match:
             current_code = int(vc_match.group(1))
             current_name = vn_match.group(1)
-            new_code = current_code + 1
+            # Use run_number as an absolute increment to guarantee strictly increasing versions
+            # even if the git push back to the repository gets blocked by branch protection.
+            run_num = int(os.environ.get("RUN_NUM", "0"))
+            new_code = current_code + run_num
             parts = current_name.split(".")
             if len(parts) >= 3:
                 try:
-                    parts[-1] = str(int(parts[-1]) + 1)
+                    parts[-1] = str(int(parts[-1]) + run_num)
                 except ValueError:
-                    parts.append("1")
+                    parts.append(str(run_num))
             elif len(parts) == 2:
-                parts.append("1")
+                parts.append(str(run_num))
             else:
-                parts.append("1")
+                parts.append(str(run_num))
             new_name = ".".join(parts)
             content = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {new_code}", content)
             content = re.sub(r"versionName\s*=\s*\"[^\"]+\"", f"versionName = \"{new_name}\"", content)
@@ -60,6 +63,8 @@ jobs:
             print("Error: Could not parse version details from build.gradle.kts")
             exit(1)
         '
+      env:
+        RUN_NUM: ${{ github.run_number }}
 
     - name: Commit and Push Version Change
       run: |
@@ -67,7 +72,7 @@ jobs:
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         git add app/build.gradle.kts
         git commit -m "chore: bump version to v${{ steps.version_bump.outputs.version_name }} [skip ci]" || echo "No changes to commit"
-        git push origin main
+        git push origin main || echo "Branch protection or restricted GITHUB_TOKEN permission blocked pushing version changes to branch, continuing with dynamic compilation version instead!"
 
     - name: Re-generate pristine Gradle Wrapper
       run: gradle wrapper
@@ -82,6 +87,9 @@ jobs:
       run: chmod +x gradlew
 
     - name: Build with Gradle
+      env:
+        APP_VERSION_CODE: ${{ steps.version_bump.outputs.version_code }}
+        APP_VERSION_NAME: ${{ steps.version_bump.outputs.version_name }}
       run: ./gradlew assembleDebug
 
     - name: Rename APK for release
