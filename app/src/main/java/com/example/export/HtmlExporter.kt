@@ -18,7 +18,7 @@ class HtmlExporter {
 
     private fun parseStructure(rawText: String): List<SecParsed> {
         val lines = rawText.split(Regex("\\r?\\n"))
-        val sectionSep = Regex("^={10,}\\s*$")
+        val sectionSep = Regex("^={3,}\\s*$")
         val chapterPat = Regex("^🚩\\s*\\[(.+?)\\]\\s*🚩\\s*$")
         val chapterPat2 = Regex("^🚩\\s*(.+?)\\s*🚩\\s*$")
 
