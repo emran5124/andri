@@ -97,10 +97,19 @@ fun MainScreen(
 
     // On start, if there is an active session, prompt user
     LaunchedEffect(activeSession) {
-        if (!hasCheckedResume && activeSession != null && activeSession?.isCompleted == false && viewModel.processingState.value is ProcessingState.Idle) {
-            showResumeDialog = true
+        if (!hasCheckedResume && activeSession != null) {
+            if (activeSession?.isCompleted == false && viewModel.processingState.value is ProcessingState.Idle) {
+                showResumeDialog = true
+            }
             hasCheckedResume = true
         }
+    }
+
+    // Safety fallback: if no active session existed on initial launch after 1 second,
+    // bypass resume check so starting new sessions won't show it.
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(1000)
+        hasCheckedResume = true
     }
 
     if (showResumeDialog && activeSession != null) {
@@ -186,7 +195,10 @@ fun MainScreen(
                     .weight(1f)
             ) {
                 when (currentTab) {
-                    0 -> ProcessingTab(viewModel = viewModel)
+                    0 -> ProcessingTab(
+                        viewModel = viewModel,
+                        onStartNewSession = { hasCheckedResume = true }
+                    )
                     1 -> ApiKeysTab(viewModel = viewModel)
                     2 -> PromptTemplatesTab(viewModel = viewModel)
                     3 -> HistoryTab(viewModel = viewModel)
@@ -238,7 +250,10 @@ fun MainScreen(
 
 // ================= PROCESSING TAB =================
 @Composable
-fun ProcessingTab(viewModel: MainViewModel) {
+fun ProcessingTab(
+    viewModel: MainViewModel,
+    onStartNewSession: () -> Unit
+) {
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
 
@@ -455,7 +470,7 @@ fun ProcessingTab(viewModel: MainViewModel) {
                         OutlinedTextField(
                             value = customPromptOverride,
                             onValueChange = { customPromptOverride = it },
-                            label = { Text("پرامپت") },
+                            label = { Text("متن پرامپت (قابل ویرایش مستقیم)") },
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
                             maxLines = 4
@@ -466,7 +481,10 @@ fun ProcessingTab(viewModel: MainViewModel) {
 
             item {
                 Button(
-                    onClick = { viewModel.startNewSession(context, customPromptOverride) },
+                    onClick = {
+                        onStartNewSession()
+                        viewModel.startNewSession(context, customPromptOverride)
+                    },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(56.dp)
@@ -2107,7 +2125,7 @@ fun SettingsTab(viewModel: MainViewModel) {
                     val sDelay = successDelay.toIntOrNull() ?: 10
                     val eDelay = errorDelay.toIntOrNull() ?: 10
                     val oDelay = overloadDelay.toIntOrNull() ?: 30
-                    val limit = retriesLimit.toIntOrNull() ?: 5
+                    val limit = retriesLimit.toIntOrNull() ?: 3
 
                     viewModel.updateSettings(
                         AppSettings(
