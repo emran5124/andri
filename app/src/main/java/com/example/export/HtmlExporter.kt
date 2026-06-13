@@ -409,7 +409,20 @@ class HtmlExporter {
     }
 
     fun generateHtmlFromSummaries(fileName: String, summaries: List<String>): String {
-        val rawText = summaries.joinToString("\n🚩 [بخش خلاصه] 🚩\n")
+        val total = summaries.size
+        val sb = java.lang.StringBuilder()
+        for (i in summaries.indices) {
+            val idx = i + 1
+            sb.append("============\n")
+            sb.append("بخش $idx از $total\n")
+            sb.append("============\n")
+            sb.append("🚩 [خلاصه بخش $idx] 🚩\n")
+            sb.append(summaries[i])
+            if (i < summaries.size - 1) {
+                sb.append("\n\n")
+            }
+        }
+        val rawText = sb.toString()
         val parsed = parseStructure(rawText)
         val bookJson = bookToJson(parsed)
         val randSuffix = java.util.UUID.randomUUID().toString().take(6)
