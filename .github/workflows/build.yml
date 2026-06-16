@@ -1,4 +1,4 @@
-name: Build Android APKs
+name: Build Android APK
 
 on:
   push:
@@ -95,7 +95,7 @@ jobs:
 
     - name: Rename APK for release
       run: |
-        mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/Booker-v${{ steps.version_bump.outputs.version_name }}.apk
+        mv app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/release/Booker-v${{ steps.version_bump.outputs.version_name }}.apk
 
     - name: Create GitHub Release and Upload APK
       uses: softprops/action-gh-release@v2
@@ -107,7 +107,7 @@ jobs:
           Version Name: ${{ steps.version_bump.outputs.version_name }}
           Version Code: ${{ steps.version_bump.outputs.version_code }}
         files: |
-          app/build/outputs/apk/debug/Booker-v${{ steps.version_bump.outputs.version_name }}.apk
+          app/build/outputs/apk/release/Booker-v${{ steps.version_bump.outputs.version_name }}.apk
         draft: false
         prerelease: false
       env:
