@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.txtsummarizer.kjpqxw"
     minSdk = 24
     targetSdk = 36
-    versionCode = 199
-    versionName = "1.0.198"
+    versionCode = 236
+    versionName = "1.0.235"
 
     // Dynamic version override to ensure every single local or GitHub build increments automatically
     val dynamicVersionCode = System.getenv("APP_VERSION_CODE")?.toIntOrNull() 
