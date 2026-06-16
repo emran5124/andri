@@ -414,7 +414,7 @@ class HtmlExporter {
         for (i in summaries.indices) {
             val idx = i + 1
             sb.append("============\n")
-            sb.append("بخش $idx از $total\n")
+            sb.append("بخش $idx از $total \n")
             sb.append("============\n")
             // sb.append("🚩 [خلاصه بخش $idx] 🚩\n")
             sb.append(summaries[i])
