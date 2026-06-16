@@ -439,7 +439,7 @@ class HtmlExporter {
 /* ═══════════════════════════════════════════════════════════════
    FONT
 ═══════════════════════════════════════════════════════════════ */
-@import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;700;900&display=swap');
+:root { --font-main: 'Vazir', 'Tahoma', 'Arial Unicode MS', sans-serif; }
 
 /* ═══════════════════════════════════════════════════════════════
    THEMES
