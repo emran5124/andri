@@ -416,7 +416,7 @@ class HtmlExporter {
             sb.append("============\n")
             sb.append("بخش $idx از $total\n")
             sb.append("============\n")
-            sb.append("🚩 [خلاصه بخش $idx] 🚩\n")
+            // sb.append("🚩 [خلاصه بخش $idx] 🚩\n")
             sb.append(summaries[i])
             if (i < summaries.size - 1) {
                 sb.append("\n\n")
