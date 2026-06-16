@@ -1,4 +1,4 @@
-import java.util.Base64
+
 
 plugins {
   alias(libs.plugins.android.application)
@@ -31,33 +31,6 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
-  // Automatically decode debug.keystore from debug.keystore.base64 in project or workspace directories
-  val possibleBase64Files = listOf(
-    file("${rootDir}/debug.keystore.base64"),
-    file("${projectDir}/../debug.keystore.base64"),
-    file("../debug.keystore.base64")
-  )
-  val base64File = possibleBase64Files.firstOrNull { it.exists() }
-
-  if (base64File != null) {
-    val targetKeystores = listOf(
-      file("${rootDir}/debug.keystore"),
-      file("${projectDir}/debug.keystore"),
-      file("debug.keystore")
-    )
-    for (targetFile in targetKeystores) {
-      if (!targetFile.exists()) {
-        try {
-          val base64Content = base64File.readText().replace("\\s".toRegex(), "")
-          val decodedBytes = Base64.getDecoder().decode(base64Content)
-          targetFile.writeBytes(decodedBytes)
-          println("Generated debug.keystore from base64 at path: ${targetFile.absolutePath}")
-        } catch (e: Exception) {
-          println("Failed to decode debug.keystore to ${targetFile.absolutePath}: ${e.message}")
-        }
-      }
-    }
-  }
 
   signingConfigs {
     create("release") {
@@ -67,18 +40,7 @@ android {
       keyAlias = "upload"
       keyPassword = System.getenv("KEY_PASSWORD")
     }
-    create("debugConfig") {
-      val keystorePaths = listOf(
-        file("${rootDir}/debug.keystore"),
-        file("${projectDir}/debug.keystore"),
-        file("debug.keystore")
-      )
-      val keystoreFile = keystorePaths.firstOrNull { it.exists() } ?: file("${rootDir}/debug.keystore")
-      storeFile = keystoreFile
-      storePassword = "android"
-      keyAlias = "androiddebugkey"
-      keyPassword = "android"
-    }
+
   }
 
   buildTypes {
@@ -87,16 +49,6 @@ android {
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
-    }
-    debug {
-      val keystorePaths = listOf(
-        file("${rootDir}/debug.keystore"),
-        file("${projectDir}/debug.keystore"),
-        file("debug.keystore")
-      )
-      if (keystorePaths.any { it.exists() }) {
-        signingConfig = signingConfigs.getByName("debugConfig")
-      }
     }
   }
   compileOptions {

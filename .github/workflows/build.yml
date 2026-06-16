@@ -77,20 +77,21 @@ jobs:
     - name: Re-generate pristine Gradle Wrapper
       run: gradle wrapper
 
-    - name: Decrypt Keystore
+    - name: Restore Keystore
       run: |
-        if [ -f debug.keystore.base64 ]; then
-          base64 -d debug.keystore.base64 > debug.keystore
-        fi
+        echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > my-upload-key.jks
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
     - name: Build with Gradle
       env:
+        STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+        KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        KEYSTORE_PATH: my-upload-key.jks
         APP_VERSION_CODE: ${{ steps.version_bump.outputs.version_code }}
         APP_VERSION_NAME: ${{ steps.version_bump.outputs.version_name }}
-      run: ./gradlew assembleDebug
+      run: ./gradlew assembleRelease
 
     - name: Rename APK for release
       run: |
