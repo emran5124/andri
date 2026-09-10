@@ -43,4 +43,47 @@ object JsonSerializer {
             emptyList()
         }
     }
+
+    fun serializeBackup(apiKeys: List<com.example.db.ApiKeyConfig>, prompts: List<com.example.db.PromptTemplate>): String {
+        return try {
+            val backupKeys = apiKeys.map { BackupApiKey(it.title, it.apiKey, it.priorityOrder, it.modelsJson) }
+            val backupPrompts = prompts.map { BackupPrompt(it.title, it.promptContent, it.priorityOrder) }
+            val backupData = BackupData(backupKeys, backupPrompts)
+            val adapter = moshi.adapter(BackupData::class.java)
+            adapter.toJson(backupData)
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
+    fun deserializeBackup(json: String): BackupData? {
+        if (json.isBlank()) return null
+        return try {
+            val adapter = moshi.adapter(BackupData::class.java)
+            adapter.fromJson(json)
+        } catch (e: Exception) {
+            null
+        }
+    }
 }
+
+@com.squareup.moshi.JsonClass(generateAdapter = true)
+data class BackupApiKey(
+    val title: String,
+    val apiKey: String,
+    val priorityOrder: Int,
+    val modelsJson: String
+)
+
+@com.squareup.moshi.JsonClass(generateAdapter = true)
+data class BackupPrompt(
+    val title: String,
+    val promptContent: String,
+    val priorityOrder: Int
+)
+
+@com.squareup.moshi.JsonClass(generateAdapter = true)
+data class BackupData(
+    val apiKeys: List<BackupApiKey>?,
+    val prompts: List<BackupPrompt>?
+)

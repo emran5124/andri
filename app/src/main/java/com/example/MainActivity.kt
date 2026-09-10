@@ -1123,41 +1123,93 @@ fun ApiKeysTab(viewModel: MainViewModel) {
                     item {
                         var customCode by remember { mutableStateOf("") }
                         var customTitle by remember { mutableStateOf("") }
+                        var showBulkKeyInput by remember { mutableStateOf(false) }
+                        var bulkKeyInput by remember { mutableStateOf("") }
 
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            OutlinedTextField(
-                                value = customCode,
-                                onValueChange = { customCode = it },
-                                label = { Text("کد مدل") },
-                                modifier = Modifier.weight(1f),
-                                textStyle = MaterialTheme.typography.bodySmall,
-                                singleLine = true
-                            )
-                            OutlinedTextField(
-                                value = customTitle,
-                                onValueChange = { customTitle = it },
-                                label = { Text("عنوان مدل") },
-                                modifier = Modifier.weight(1f),
-                                textStyle = MaterialTheme.typography.bodySmall,
-                                singleLine = true
-                            )
+                            Text("افزودن مدل سفارشی:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            TextButton(
+                                onClick = { showBulkKeyInput = !showBulkKeyInput },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(if (showBulkKeyInput) "ورود تکی" else "ورود گروهی با کاما (,)", fontSize = 11.sp)
+                            }
                         }
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Button(
-                            onClick = {
-                                if (customCode.isNotBlank() && customTitle.isNotBlank()) {
-                                    selectedModelsList.add(ModelConfig(customCode, customTitle))
-                                    customCode = ""
-                                    customTitle = ""
+
+                        if (showBulkKeyInput) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                OutlinedTextField(
+                                    value = bulkKeyInput,
+                                    onValueChange = { bulkKeyInput = it },
+                                    label = { Text("شناسه‌ها جدا شده با کاما (,)", fontSize = 11.sp) },
+                                    placeholder = { Text("gemini-3.5-flash,gemini-3-flash-preview", fontSize = 10.sp) },
+                                    modifier = Modifier.fillMaxWidth().height(85.dp),
+                                    textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                                )
+                                Button(
+                                    onClick = {
+                                        val tokens = bulkKeyInput.split(',', '،', '\n')
+                                            .map { it.trim() }
+                                            .filter { it.isNotEmpty() }
+                                        if (tokens.isNotEmpty()) {
+                                            tokens.forEach { tok ->
+                                                if (selectedModelsList.none { it.code.equals(tok, ignoreCase = true) }) {
+                                                    selectedModelsList.add(ModelConfig(tok, tok.replace("-", " ")))
+                                                }
+                                            }
+                                            viewModel.addGlobalModelsBulk(bulkKeyInput)
+                                            bulkKeyInput = ""
+                                            Toast.makeText(context, "${tokens.size} مدل به کلید اضافه و در برنامه ثبت شد.", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            Toast.makeText(context, "لطفاً ابتدا شناسه‌ها را وارد نمایید.", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                                ) {
+                                    Text("افزودن گروهی به این کلید و ثبت در سیستم")
                                 }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-                        ) {
-                            Text("افزودن مدل سفارشی فوق به لیست")
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = customCode,
+                                    onValueChange = { customCode = it },
+                                    label = { Text("کد مدل") },
+                                    modifier = Modifier.weight(1f),
+                                    textStyle = MaterialTheme.typography.bodySmall,
+                                    singleLine = true
+                                )
+                                OutlinedTextField(
+                                    value = customTitle,
+                                    onValueChange = { customTitle = it },
+                                    label = { Text("عنوان مدل") },
+                                    modifier = Modifier.weight(1f),
+                                    textStyle = MaterialTheme.typography.bodySmall,
+                                    singleLine = true
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Button(
+                                onClick = {
+                                    if (customCode.isNotBlank() && customTitle.isNotBlank()) {
+                                        selectedModelsList.add(ModelConfig(customCode, customTitle))
+                                        customCode = ""
+                                        customTitle = ""
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                            ) {
+                                Text("افزودن مدل سفارشی فوق به لیست")
+                            }
                         }
                     }
                 }
@@ -1325,6 +1377,8 @@ fun ApiKeysTab(viewModel: MainViewModel) {
             item {
                 var newModelCode by remember { mutableStateOf("") }
                 var newModelTitle by remember { mutableStateOf("") }
+                var showBulkModelDialog by remember { mutableStateOf(false) }
+                var bulkModelInput by remember { mutableStateOf("") }
 
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -1377,6 +1431,104 @@ fun ApiKeysTab(viewModel: MainViewModel) {
                                 contentPadding = PaddingValues(horizontal = 12.dp)
                             ) {
                                 Text("افزودن", fontSize = 12.sp)
+                            }
+                        }
+
+                        // Bulk model import row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("یا وارد کردن چندتایی با کاما:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            OutlinedButton(
+                                onClick = {
+                                    bulkModelInput = ""
+                                    showBulkModelDialog = true
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("ورود گروهی مدل‌ها (,)", fontSize = 11.sp)
+                            }
+                        }
+
+                        if (showBulkModelDialog) {
+                            androidx.compose.ui.window.Dialog(
+                                onDismissRequest = { showBulkModelDialog = false }
+                            ) {
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    shape = RoundedCornerShape(16.dp)
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .padding(16.dp)
+                                            .fillMaxWidth(),
+                                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        Text(
+                                            "ورود گروهی مدل‌ها",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.align(Alignment.CenterHorizontally)
+                                        )
+                                        Text(
+                                            "شناسه‌های مدل‌ها را جدا شده با کاما (,) وارد نمایید. عنوان هر مدل به‌صورت خودکار با جایگزینی خط تیره (-) با فاصله تنظیم خواهد شد.\n\nفرمت نمونه:\ngemini-3.5-flash,gemini-3-flash-preview,gemini-2.5-pro",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            lineHeight = 16.sp
+                                        )
+
+                                        OutlinedTextField(
+                                            value = bulkModelInput,
+                                            onValueChange = { bulkModelInput = it },
+                                            label = { Text("شناسه‌ها با کاما (,)") },
+                                            placeholder = { Text("gemini-3.5-flash,gemini-3-flash-preview,...", fontSize = 11.sp) },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(120.dp),
+                                            textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                                        )
+
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            OutlinedButton(
+                                                onClick = { showBulkModelDialog = false },
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Text("انصراف")
+                                            }
+
+                                            Button(
+                                                onClick = {
+                                                    if (bulkModelInput.isBlank()) {
+                                                        Toast.makeText(context, "شناسه‌ای وارد نشده است.", Toast.LENGTH_SHORT).show()
+                                                    } else {
+                                                        viewModel.addGlobalModelsBulk(bulkModelInput) { count ->
+                                                            if (count > 0) {
+                                                                Toast.makeText(context, "$count مدل جدید با موفقیت به لیست اضافه شد.", Toast.LENGTH_LONG).show()
+                                                                showBulkModelDialog = false
+                                                                bulkModelInput = ""
+                                                            } else {
+                                                                Toast.makeText(context, "مدل جدیدی اضافه نشد (ممکن است تکراری باشند یا ورودی نامعتبر باشد).", Toast.LENGTH_SHORT).show()
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Text("ثبت و افزودن")
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
 
@@ -1916,6 +2068,12 @@ fun SettingsTab(viewModel: MainViewModel) {
     var separator by remember { mutableStateOf("-----") }
     var compiledSeparatorTemplate by remember { mutableStateOf("\n=========\nبخش {index}/{total}\n=========\n{summary}") }
 
+    var showExportDialog by remember { mutableStateOf(false) }
+    var showImportDialog by remember { mutableStateOf(false) }
+    var exportJsonText by remember { mutableStateOf("") }
+    var importJsonText by remember { mutableStateOf("") }
+    var replaceOnImport by remember { mutableStateOf(false) }
+
     LaunchedEffect(settingsState) {
         settingsState?.let {
             successDelay = it.successDelaySeconds.toString()
@@ -2148,6 +2306,250 @@ fun SettingsTab(viewModel: MainViewModel) {
                             Icon(imageVector = Icons.Default.Share, contentDescription = "Share", modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("📤 اشتراک‌گذاری گزارش خطاها")
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f))
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Settings, contentDescription = "Backup", tint = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("پشتیبان‌گیری و بازیابی داده‌ها (کلیدها و پرامپت‌ها)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+                    Text(
+                        text = "می‌توانید تمام کلیدهای API و قالب‌های شخصی‌سازی شده پرامپت خود را صادر کرده و در جایی ذخیره کنید. هنگام خرید گوشی جدید یا بعد از پاک کردن برنامه برای نصب آپدیت جدید، می‌توانید آنها را مجدداً بازیابی کنید تا تنظیمات و کلیدهایتان از دست نروند.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        lineHeight = 16.sp
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                viewModel.getBackupJson { json ->
+                                    exportJsonText = json
+                                    try {
+                                        val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                        val clip = android.content.ClipData.newPlainText("BackupJson", json)
+                                        clipboardManager.setPrimaryClip(clip)
+                                        Toast.makeText(context, "متن پشتیبان با موفقیت در حافظه موقت (کلیپ‌بورد) کپی شد.", Toast.LENGTH_SHORT).show()
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "خطا در کپی حافظه موقت: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                    showExportDialog = true
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.secondary
+                            )
+                        ) {
+                            Icon(imageVector = Icons.Default.Share, contentDescription = "Export", modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("پشتیبان‌گیری (Export)", fontSize = 11.sp)
+                        }
+
+                        Button(
+                            onClick = {
+                                importJsonText = ""
+                                showImportDialog = true
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.tertiary
+                            )
+                        ) {
+                            Icon(imageVector = Icons.Default.Refresh, contentDescription = "Import", modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("بازیابی (Import)", fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Export Dialog
+        if (showExportDialog) {
+            item {
+                androidx.compose.ui.window.Dialog(
+                    onDismissRequest = { showExportDialog = false }
+                ) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .padding(16.dp)
+                                .fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            Text(
+                                "اطلاعات پشتیبان آماده است",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.align(Alignment.CenterHorizontally)
+                            )
+                            Text(
+                                "فایل پشتیبان با موفقیت تولید شد و متن آن در کلیپ‌بورد کپی گردید. هم‌اکنون می‌توانید متن زیر را کپی نموده یا اشتراک‌گذاری کنید تا در یک برنامه یادداشت‌برداری، تلگرام یا هر جای دیگر ذخیره گردد.",
+                                fontSize = 11.sp,
+                                lineHeight = 16.sp
+                            )
+
+                            OutlinedTextField(
+                                value = exportJsonText,
+                                onValueChange = {},
+                                label = { Text("محتوای پشتیبان (فرمت JSON)") },
+                                readOnly = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(120.dp),
+                                textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = {
+                                        try {
+                                            val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                            val clip = android.content.ClipData.newPlainText("BackupJson", exportJsonText)
+                                            clipboardManager.setPrimaryClip(clip)
+                                            Toast.makeText(context, "در حافظه کپی شد.", Toast.LENGTH_SHORT).show()
+                                        } catch (e: Exception) {
+                                            Toast.makeText(context, "خطا: ${e.message}", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("کپی مجدد کُد")
+                                }
+
+                                Button(
+                                    onClick = {
+                                        shareText(context, "پشتیبان کلیدها و قالب‌های خلاصه فایل", exportJsonText)
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("📤 اشتراک‌گذاری")
+                                }
+                            }
+
+                            TextButton(
+                                onClick = { showExportDialog = false },
+                                modifier = Modifier.align(Alignment.End)
+                            ) {
+                                Text("بستن")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Import Dialog
+        if (showImportDialog) {
+            item {
+                androidx.compose.ui.window.Dialog(
+                    onDismissRequest = { showImportDialog = false }
+                ) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .padding(16.dp)
+                                .fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            Text(
+                                "بازیابی اطلاعات از فایل پشتیبان",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.align(Alignment.CenterHorizontally)
+                            )
+                            Text(
+                                "لطفاً متن پکیج پشتیبانی را که قبلاً کپی یا اشتراک‌گذاری کرده‌اید، در بخش زیر وارد نمایید:",
+                                fontSize = 11.sp,
+                                lineHeight = 16.sp
+                            )
+
+                            OutlinedTextField(
+                                value = importJsonText,
+                                onValueChange = { importJsonText = it },
+                                placeholder = { Text("متن کد پشتیبان JSON را اینجا وارد کنید...") },
+                                label = { Text("کد پشتیبان") },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(120.dp),
+                                textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+                            )
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { replaceOnImport = !replaceOnImport }
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(checked = replaceOnImport, onCheckedChange = { replaceOnImport = it })
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text("جایگزینی کامل (پاک‌سازی قبلی‌ها)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    Text("در صورت تیک زدن، تمام کلیدها و قالب‌های فعلی پاک و با این پشتیبان جایگزین خواهند شد.", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = { showImportDialog = false },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("انصراف")
+                                }
+
+                                Button(
+                                    onClick = {
+                                        if (importJsonText.isBlank()) {
+                                            Toast.makeText(context, "کد پشتیبان خالی است.", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            viewModel.restoreBackupJson(importJsonText, replaceOnImport) { success, msg ->
+                                                if (success) {
+                                                    Toast.makeText(context, "اطلاعات با موفقیت بازیابی شد.", Toast.LENGTH_LONG).show()
+                                                    showImportDialog = false
+                                                } else {
+                                                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                                }
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("شروع بازیابی")
+                                }
+                            }
                         }
                     }
                 }

@@ -266,6 +266,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun addGlobalModelsBulk(rawInput: String, onComplete: (Int) -> Unit = {}) {
+        viewModelScope.launch {
+            val tokens = rawInput.split(',', '،', '\n')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+
+            if (tokens.isEmpty()) {
+                onComplete(0)
+                return@launch
+            }
+
+            val settings = appSettingsFlow.value ?: AppSettings()
+            val current = getGlobalModelsFromSettings(settings).toMutableList()
+            var addedCount = 0
+
+            for (token in tokens) {
+                if (current.none { it.code.equals(token, ignoreCase = true) }) {
+                    val title = token.replace("-", " ")
+                    current.add(ModelConfig(token, title))
+                    addedCount++
+                }
+            }
+
+            if (addedCount > 0) {
+                val updatedSettings = settings.copy(globalModelsJson = JsonSerializer.serializeModels(current))
+                updateSettings(updatedSettings)
+            }
+            onComplete(addedCount)
+        }
+    }
+
     fun deleteGlobalModel(code: String) {
         viewModelScope.launch {
             val settings = appSettingsFlow.value ?: AppSettings()
@@ -694,6 +725,55 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun clearHistory() {
         viewModelScope.launch {
             sessionPersistenceManager.clearHistory()
+        }
+    }
+
+    fun getBackupJson(onComplete: (String) -> Unit) {
+        viewModelScope.launch {
+            val keys = apiKeyManager.getAllApiKeys()
+            val prompts = promptManager.getAllTemplates()
+            val json = JsonSerializer.serializeBackup(keys, prompts)
+            onComplete(json)
+        }
+    }
+
+    fun restoreBackupJson(json: String, replaceExisting: Boolean, onComplete: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            val backup = JsonSerializer.deserializeBackup(json)
+            if (backup == null) {
+                onComplete(false, "فرمت فایل پشتیبان نامعتبر است یا با خطا مواجه شد.")
+                return@launch
+            }
+            try {
+                if (replaceExisting) {
+                    db.apiKeyDao().deleteAllApiKeys()
+                    db.promptTemplateDao().deleteAllTemplates()
+                }
+                
+                backup.apiKeys?.forEach { key ->
+                    db.apiKeyDao().insertApiKey(
+                        com.example.db.ApiKeyConfig(
+                            title = key.title,
+                            apiKey = key.apiKey,
+                            priorityOrder = key.priorityOrder,
+                            modelsJson = key.modelsJson
+                        )
+                    )
+                }
+
+                backup.prompts?.forEach { prompt ->
+                    db.promptTemplateDao().insertTemplate(
+                        com.example.db.PromptTemplate(
+                            title = prompt.title,
+                            promptContent = prompt.promptContent,
+                            priorityOrder = prompt.priorityOrder
+                        )
+                    )
+                }
+                onComplete(true, "بازیابی با موفقیت انجام شد.")
+            } catch (e: Exception) {
+                onComplete(false, "خطا در بازیابی پایگاه داده: ${e.message}")
+            }
         }
     }
 }

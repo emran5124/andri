@@ -19,6 +19,9 @@ interface ApiKeyDao {
 
     @Query("DELETE FROM api_keys WHERE id = :id")
     suspend fun deleteApiKeyById(id: Int)
+
+    @Query("DELETE FROM api_keys")
+    suspend fun deleteAllApiKeys()
 }
 
 @Dao
@@ -37,6 +40,9 @@ interface PromptTemplateDao {
 
     @Query("DELETE FROM prompt_templates WHERE id = :id")
     suspend fun deleteTemplateById(id: Int)
+
+    @Query("DELETE FROM prompt_templates")
+    suspend fun deleteAllTemplates()
 }
 
 @Dao

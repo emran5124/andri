@@ -76,26 +76,25 @@ jobs:
 
     - name: Re-generate pristine Gradle Wrapper
       run: gradle wrapper
-      
+
+    - name: Decrypt Keystore
+      run: |
+        if [ -f debug.keystore.base64 ]; then
+          base64 -d debug.keystore.base64 > debug.keystore
+        fi
+
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
-    - name: Restore Keystore
-      run: |
-        echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "${{ github.workspace }}/app/my-upload-key.jks"
-
     - name: Build with Gradle
       env:
-        STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
-        KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        KEYSTORE_PATH: ${{ github.workspace }}/app/my-upload-key.jks
         APP_VERSION_CODE: ${{ steps.version_bump.outputs.version_code }}
         APP_VERSION_NAME: ${{ steps.version_bump.outputs.version_name }}
-      run: ./gradlew assembleRelease
+      run: ./gradlew assembleDebug
 
     - name: Rename APK for release
       run: |
-        mv app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/release/Booker-v${{ steps.version_bump.outputs.version_name }}.apk
+        mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/Booker-v${{ steps.version_bump.outputs.version_name }}.apk
 
     - name: Create GitHub Release and Upload APK
       uses: softprops/action-gh-release@v2
@@ -107,7 +106,7 @@ jobs:
           Version Name: ${{ steps.version_bump.outputs.version_name }}
           Version Code: ${{ steps.version_bump.outputs.version_code }}
         files: |
-          app/build/outputs/apk/release/Booker-v${{ steps.version_bump.outputs.version_name }}.apk
+          app/build/outputs/apk/debug/Booker-v${{ steps.version_bump.outputs.version_name }}.apk
         draft: false
         prerelease: false
       env:
